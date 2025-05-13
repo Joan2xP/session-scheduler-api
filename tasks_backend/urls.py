@@ -19,7 +19,7 @@ from django.contrib import admin
 from django.urls import path, include
 
 apiPatterns = [
-    path("exhibitors/", include("exhibitors.urls")),
+    path("expositors/", include("exhibitors.urls")),
 ]
 urlpatterns = [
     path("admin/", admin.site.urls),

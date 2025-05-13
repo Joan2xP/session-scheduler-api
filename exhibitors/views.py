@@ -1,12 +1,11 @@
-from django.http import JsonResponse
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from .models import Exhibitor
+from .serializers import ExhibitorSerializer
 
-# Create your views here.
 
-
-def index(request):
-    mock_data = [
-        {"id": 1, "month": 1, "year": 2023},
-        {"id": 2, "month": 2, "year": 2023},
-        {"id": 3, "month": 3, "year": 2023},
-    ]
-    return JsonResponse(mock_data, safe=False)
+class ExhibitorList(APIView):
+    def get(self, request):
+        exhibitors = Exhibitor.objects.all()
+        serializer = ExhibitorSerializer(exhibitors, many=True)
+        return Response(serializer.data)

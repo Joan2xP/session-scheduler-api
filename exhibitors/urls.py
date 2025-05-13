@@ -1,7 +1,7 @@
 from django.urls import path
-from . import views
+from .views import ExhibitorList
 
 urlpatterns = [
     # Example:
-    path("", views.index, name="index"),
+    path("", ExhibitorList.as_view(), name="exhibitor-list"),
 ]
