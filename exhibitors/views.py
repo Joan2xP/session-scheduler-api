@@ -9,3 +9,7 @@ class ExhibitorList(APIView):
         exhibitors = Exhibitor.objects.all()
         serializer = ExhibitorSerializer(exhibitors, many=True)
         return Response(serializer.data)
+
+    def post(self, request):
+
+        return Response({"message": "POST request received"})
