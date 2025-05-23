@@ -40,6 +40,14 @@ def generateScheduleData(request):
         exclude_days=[],
     )
 
-    schedule_data, schedule_statistics = schedule_generator.solve_group_scheduling()
+    schedule_data, schedule_statistics, days_with_details = (
+        schedule_generator.solve_group_scheduling()
+    )
 
-    return JsonResponse({"data": schedule_data, "statistics": schedule_statistics})
+    return JsonResponse(
+        {
+            "scheduleData": schedule_data,
+            "statistics": schedule_statistics,
+            "daysWithDetails": days_with_details,
+        }
+    )

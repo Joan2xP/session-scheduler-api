@@ -515,6 +515,36 @@ class SessionScheduler:
 
         return schedule_data
 
+    def get_days_with_details(self):
+        days_with_details = []
+        for day_name in ["Lunes", "Miércoles", "Jueves", "Viernes", "Sábado"]:
+            # Map Spanish day names to their corresponding indices
+            day_index = [
+                "Lunes",
+                "Martes",
+                "Miércoles",
+                "Jueves",
+                "Viernes",
+                "Sábado",
+                "Domingo",
+            ].index(day_name)
+
+            selected_sessions = self.selected_days_sessions.get(
+                list(self.day_mapping.keys())[
+                    list(self.day_mapping.values()).index(day_index)
+                ],
+                [],
+            )
+            location = self.location_mapping.get(day_index, "Unknown Location")
+            time_period, time_range = self.time_slots[0][
+                selected_sessions[0]
+            ]  # Assuming morning session for header
+            days_with_details.append(
+                {"day": day_name, "location": location, "time": time_range}
+            )
+
+        return days_with_details
+
     def export_to_excel(self, schedule_data, output_path):
         """Export the schedule to an Excel file."""
         schedule_df = pd.DataFrame(schedule_data)
@@ -784,13 +814,19 @@ class SessionScheduler:
 
             # Format schedule
             schedule_data = self.format_schedule(solver)
+            schedule_df = pd.DataFrame(schedule_data)
+            formatted_data = self.format_schedule_data(
+                schedule_df.to_dict(orient="records")
+            )
 
             # Export to Excel
 
             # Calculate statistics
             statistics = self.calculate_statistics(solver)
 
-            return schedule_data, statistics
+            days_with_details = self.get_days_with_details()
+
+            return formatted_data, statistics, days_with_details
 
         else:
             print(f"No solution found: {solver.StatusName(status)}")
