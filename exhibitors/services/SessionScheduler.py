@@ -571,15 +571,15 @@ class SessionScheduler:
             sessions.sort(key=lambda x: int(x))
             attendance_summary.append(
                 {
-                    "Person": person,
-                    "Session Count": session_count,
-                    "Sessions": ", ".join(sessions),
+                    "person": person,
+                    "sessionCount": session_count,
+                    "days": ", ".join(sessions),
                 }
             )
 
         # Sort by session count in descending order
         attendance_summary = sorted(
-            attendance_summary, key=lambda x: x["Session Count"], reverse=True
+            attendance_summary, key=lambda x: x["sessionCount"], reverse=True
         )
 
         return attendance_summary
