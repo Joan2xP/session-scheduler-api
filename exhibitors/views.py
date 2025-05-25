@@ -1,7 +1,7 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from .models import Exhibitor
-from .serializers import ExhibitorSerializer
+from .models import Exhibitor, Participant
+from .serializers import ExhibitorSerializer, ParticipantSerializer
 from .services.SessionScheduler import SessionScheduler
 from django.http import JsonResponse
 from django.http import HttpRequest
@@ -51,3 +51,14 @@ def generateScheduleData(request):
             "daysWithDetails": days_with_details,
         }
     )
+
+
+class ParticipantList(APIView):
+    def get(self, request):
+        participants = Participant.objects.all()
+        serializer = ParticipantSerializer(participants, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+
+        return Response({"message": "POST request received"})
