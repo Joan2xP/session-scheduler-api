@@ -3,7 +3,7 @@ from .views import ExhibitorList, generateScheduleData, ParticipantList
 
 urlpatterns = [
     # Example:
-    path("", ExhibitorList.as_view(), name="exhibitor-list"),
     path("participants", ParticipantList.as_view(), name="participant-list"),
+    path("", ExhibitorList.as_view(), name="exhibitor-list"),
     path("generate", generateScheduleData, name="generate-schedule-data"),
 ]
