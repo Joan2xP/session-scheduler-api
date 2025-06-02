@@ -6,21 +6,20 @@ import os
 from jinja2 import Template
 import imgkit
 import argparse
+from exhibitors.models import Participant
+import random
 
 
 class SessionScheduler:
     def __init__(
         self,
-        excel_path,
         start_date,
         exclude_days=[],
         weekday_group_size=4,
         weekend_group_size=3,
         selected_days_sessions=None,
-        output_path=None,
     ):
         self.exclude_days = exclude_days
-        self.excel_path = excel_path
         self.start_date = start_date
         self.weekday_group_size = weekday_group_size
         self.weekend_group_size = weekend_group_size
@@ -31,11 +30,16 @@ class SessionScheduler:
             "fri": [0],  # Friday morning
             "sat": [0],  # Saturday morning
         }
-        self.output_path = output_path
-        self.df = pd.read_excel(excel_path)
-        self.people = self.df["Name"].sample(frac=1).tolist()
-        self.rows = self.df.sample(frac=1).to_dict(orient="records")
-        self.n_people = len(self.people)
+        # self.df = pd.read_excel(excel_path)
+        # self.people = self.df["Name"].sample(frac=1).tolist()
+        # self.rows = self.df.sample(frac=1).to_dict(orient="records")
+        # self.n_people = len(self.people)
+
+        self.data = []
+        self.people = []
+        self.rows = []
+        self.n_people = 0
+
         self.day_mapping = {
             "mon": 0,
             "tue": 1,
@@ -74,6 +78,31 @@ class SessionScheduler:
 
         self.initialize()
 
+    def get_data(self):
+        # Fetch all participants from the Django database
+        participants = Participant.objects.all()
+
+        self.people = [p.name for p in participants]
+        random.shuffle(self.people)
+        self.rows = [
+            {
+                "Name": p.name,
+                "Availability": p.availability,
+                "Min per Month": p.min_per_month,
+                "Max per Week": p.max_per_week,
+                "Max per Month": p.max_per_month,
+                "Only Days of Month": getattr(p, "only_days_of_month", ""),
+                "Exclude Days of Month": getattr(p, "exclude_days_of_month", ""),
+                "Partner": getattr(p, "partner", None),
+                "Exclude": getattr(p, "exclude", ""),
+                "Min Days Together": getattr(p, "min_days_together", ""),
+            }
+            for p in participants
+        ]
+
+        random.shuffle(self.rows)  # Shuffle the rows to randomize the order
+        self.n_people = len(self.people)
+
     def preprocess_available_days_and_sessions(self):
         """Preprocess the selected days and sessions into a list of (day, session) tuples."""
         start_date = datetime.strptime(
@@ -104,11 +133,12 @@ class SessionScheduler:
                         self.all_available_days_and_sessions.append((day, session))
 
     def initialize(self):
+        self.get_data()
         self.preprocess_available_days_and_sessions()
         # Convert availability strings to lists of day indices
         for row in self.rows:
             person = row["Name"]
-            avail_days = str(row["Availability"]).split(",")
+            avail_days = row["Availability"]
             self.availability[person] = [
                 self.day_mapping[day.strip()] for day in avail_days
             ]
@@ -116,37 +146,31 @@ class SessionScheduler:
 
             # Parse Only Days of Month
             only_days = row.get("Only Days of Month", "")
-            if pd.notna(only_days):
-                print(
-                    f"Only Days of Month for {person}: {only_days} : {type(only_days)}"
-                )
-                if isinstance(only_days, str):
-                    self.only_days_of_month[person] = [
-                        int(day.strip()) for day in only_days.split(",")
-                    ]
-                else:
-                    self.only_days_of_month[person] = [only_days]
-            else:
-                self.only_days_of_month[person] = []
+            self.only_days_of_month[person] = only_days
+            # if len(only_days) > 0:
+            #     print(
+            #         f"Only Days of Month for {person}: {only_days} : {type(only_days)}"
+            #     )
+            #     if isinstance(only_days, str):
+            #         self.only_days_of_month[person] = [
+            #             int(day.strip()) for day in only_days.split(",")
+            #         ]
+            #     else:
+            #         self.only_days_of_month[person] = [only_days]
+            # else:
+            #     self.only_days_of_month[person] = []
 
             # Parse Exclude Days of Month
             exclude_days = row.get("Exclude Days of Month", "")
             if pd.notna(exclude_days):
-                self.exclude_days_of_month[person] = (
-                    [
-                        int(day.strip())
-                        for day in exclude_days.split(",")
-                        if day.strip().isdigit()
-                    ]
-                    if exclude_days
-                    else []
-                )
+                self.exclude_days_of_month[person] = exclude_days
 
         # Extract partner constraints
         for row in self.rows:
             person = row["Name"]
-            if pd.notna(row.get("Partner", None)):
-                self.partners[person] = row["Partner"]
+            partner = row.get("Partner", "")
+            if partner != "":
+                self.partners[person] = partner
 
         # Extract max attendance constraints
         for row in self.rows:
@@ -281,19 +305,18 @@ class SessionScheduler:
 
     def add_exclusion_constraints(self):
         """Ensure people listed in the 'Exclude' column are not scheduled together."""
-        for _, row in self.df.iterrows():
+        for row in self.rows:
             person = row["Name"]
-            if pd.notna(row.get("Exclude", None)):
-                excluded_people = [name.strip() for name in row["Exclude"].split(",")]
-                for excluded_person in excluded_people:
-                    if excluded_person in self.people:
-                        for day, session in self.available_days_and_sessions:
-                            # Ensure the person and excluded person are not both attending the same session
-                            self.model.Add(
-                                self.attendance[person][day][session]
-                                + self.attendance[excluded_person][day][session]
-                                <= 1
-                            )
+            exclude = row.get("Exclude", [])
+            for excluded_person in exclude:
+                if excluded_person in self.people:
+                    for day, session in self.available_days_and_sessions:
+                        # Ensure the person and excluded person are not both attending the same session
+                        self.model.Add(
+                            self.attendance[person][day][session]
+                            + self.attendance[excluded_person][day][session]
+                            <= 1
+                        )
 
     def add_diversity_objective(self):
         """
@@ -399,54 +422,47 @@ class SessionScheduler:
 
     def add_min_days_together_constraints(self):
         """Ensure partners are scheduled together for at least the specified number of sessions on specific weekdays."""
-        for _, row in self.df.iterrows():
+        for row in self.rows:
             person = row["Name"]
 
             # Parse the Min Days Together column
             min_days_together = row.get("Min Days Together", "")
-            if pd.notna(min_days_together) and isinstance(min_days_together, str):
-                # Example format: "mon-2, wed-1"
-                day_constraints = [
-                    constraint.strip().split("-")
-                    for constraint in min_days_together.split(",")
-                ]
+            if pd.notna(min_days_together) and min_days_together != {}:
+                print(f"Min Days Together for {person}: {min_days_together}")
+                day_name = min_days_together.get("day")
+                min_sessions = min_days_together.get("amount")
+                partner = min_days_together.get("partner")
 
-                for constraint in day_constraints:
-                    # Validate the format (must have exactly 2 parts: day_name and min_sessions)
-                    if len(constraint) != 3:
-                        continue
+                day_index = self.day_mapping.get(day_name.strip().lower())
+                if day_index is None:
+                    continue  # Skip invalid day names
 
-                    day_name, min_sessions, partner = constraint
-                    day_index = self.day_mapping.get(day_name.strip().lower())
-                    if day_index is None:
-                        continue  # Skip invalid day names
+                print(
+                    f"Adding min days together constraint for {person} and {partner} on {day_name}: {min_sessions}"
+                )
 
-                    print(
-                        f"Adding min days together constraint for {person} and {partner} on {day_name}: {min_sessions}"
-                    )
+                # Collect attendance variables for the person and their partner on the specified day
+                together_vars = []
+                for day, session in self.available_days_and_sessions:
+                    current_date = datetime.strptime(
+                        self.start_date, "%Y-%m-%d"
+                    ) + timedelta(days=day)
+                    if current_date.weekday() == day_index:
+                        # Both person and partner must attend the same session
+                        together_var = self.model.NewBoolVar(
+                            f"{person}_{partner}_together_day{day}_session{session}"
+                        )
+                        self.model.AddBoolAnd(
+                            [
+                                self.attendance[person][day][session],
+                                self.attendance[partner][day][session],
+                            ]
+                        ).OnlyEnforceIf(together_var)
+                        together_vars.append(together_var)
 
-                    # Collect attendance variables for the person and their partner on the specified day
-                    together_vars = []
-                    for day, session in self.available_days_and_sessions:
-                        current_date = datetime.strptime(
-                            self.start_date, "%Y-%m-%d"
-                        ) + timedelta(days=day)
-                        if current_date.weekday() == day_index:
-                            # Both person and partner must attend the same session
-                            together_var = self.model.NewBoolVar(
-                                f"{person}_{partner}_together_day{day}_session{session}"
-                            )
-                            self.model.AddBoolAnd(
-                                [
-                                    self.attendance[person][day][session],
-                                    self.attendance[partner][day][session],
-                                ]
-                            ).OnlyEnforceIf(together_var)
-                            together_vars.append(together_var)
-
-                    # Add the constraint for the minimum number of sessions together
-                    if together_vars:
-                        self.model.Add(sum(together_vars) >= int(min_sessions))
+                # Add the constraint for the minimum number of sessions together
+                if together_vars:
+                    self.model.Add(sum(together_vars) >= int(min_sessions))
 
     def initialize_solver(self):
         """Initialize the solver and set parameters."""
@@ -545,13 +561,6 @@ class SessionScheduler:
 
         return days_with_details
 
-    def export_to_excel(self, schedule_data, output_path):
-        """Export the schedule to an Excel file."""
-        schedule_df = pd.DataFrame(schedule_data)
-        with pd.ExcelWriter(output_path, engine="xlsxwriter") as excel_writer:
-            schedule_df.to_excel(excel_writer, sheet_name="Schedule", index=False)
-            print(f"Schedule saved to Excel: {output_path}")
-
     def calculate_statistics(self, solver):
         """Calculate and print attendance statistics."""
         attendance_data = {}
@@ -583,142 +592,6 @@ class SessionScheduler:
         )
 
         return attendance_summary
-
-    def generate_html_table(self, schedule_data, output_html_path="schedule.html"):
-        """Generate an HTML table using the provided structure and styles."""
-        # Define the HTML template based on the provided TSX structure
-        schedule_df = pd.DataFrame(schedule_data)
-        formatted_data = self.format_schedule_data(
-            schedule_df.to_dict(orient="records")
-        )
-        print(f"Formatted data: {formatted_data}")
-        html_template = """
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Weekly Schedule</title>
-            <style>
-            {{ css_styles }}
-            </style>
-        </head>
-        <body>
-            <div class="schedule-container">
-            <h2 class="schedule-title">
-                Exhibidores {{ month }} {{ year }}
-            </h2>
-            
-            <div class="table-wrapper">
-                <table class="schedule-table">
-                <thead>
-                    <tr>
-                    <th class="header-date">Día</th>
-                    {% for day, location, time in days_with_details %}
-                    <th class="header-date header-{{ day.lower() }}">
-                        <div class="day-header">
-                        <strong>{{ day }}</strong>
-                        <div class="day-details">
-                        {{ location }}<br>
-                        {{ time }}
-                        </div>
-                        </div>
-                    </th>
-                    {% endfor %}
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for week in schedule_data %}
-                    <tr>
-                    <td colspan="6" class="week-separator">Semana {{ week.week_number }}</td>
-                    </tr>
-                    {% for day in week.days %}
-                    <tr>
-                    <td class="cell cell-date"><p>{{ day.name }}</p> <p>{{ day.date }}</p></td>
-                    {% for column_day, location, time in days_with_details  %}
-                    <td class="cell {% if column_day == day.name %}cell-{{ day.name.lower() }} {% if day.members[0] == "No hay carritos" %}no-hay-carritos{% endif %}{% endif %} ">
-                        {% if column_day == day.name %}
-                        <div class="names-container">
-                        {% for name in day.members %}
-                        <div class="name">{{ name }}</div>
-                        {% endfor %}
-                        </div>
-                        {% endif %}
-                    </td>
-                    {% endfor %}
-                    </tr>
-                    {% endfor %}
-                    {% endfor %}
-                </tbody>
-                </table>
-            </div>
-            </div>
-        </body>
-        </html>
-        """
-
-        # Prepare the days with their respective details (localization and time)
-        days_with_details = []
-        for day_name in ["Lunes", "Miércoles", "Jueves", "Viernes", "Sábado"]:
-            # Map Spanish day names to their corresponding indices
-            day_index = [
-                "Lunes",
-                "Martes",
-                "Miércoles",
-                "Jueves",
-                "Viernes",
-                "Sábado",
-                "Domingo",
-            ].index(day_name)
-
-            selected_sessions = self.selected_days_sessions.get(
-                list(self.day_mapping.keys())[
-                    list(self.day_mapping.values()).index(day_index)
-                ],
-                [],
-            )
-            location = self.location_mapping.get(day_index, "Unknown Location")
-            time_period, time_range = self.time_slots[0][
-                selected_sessions[0]
-            ]  # Assuming morning session for header
-            days_with_details.append((day_name, location, time_range))
-
-        # Render the HTML with the schedule data
-        template = Template(html_template)
-        css_styles = open("schedule.css").read()  # Load the provided CSS file
-        # Extract the month and year dynamically from the start_date
-        start_date_obj = datetime.strptime(self.start_date, "%Y-%m-%d")
-        month = start_date_obj.strftime("%B")
-        month_translation = {
-            "January": "Enero",
-            "February": "Febrero",
-            "March": "Marzo",
-            "April": "Abril",
-            "May": "Mayo",
-            "June": "Junio",
-            "July": "Julio",
-            "August": "Agosto",
-            "September": "Septiembre",
-            "October": "Octubre",
-            "November": "Noviembre",
-            "December": "Diciembre",
-        }
-        month = month_translation.get(month, month)  # Translate to Spanish
-        year = start_date_obj.year
-
-        html_content = template.render(
-            css_styles=css_styles,
-            month=month,  # Use dynamic month
-            year=year,  # Use dynamic year
-            days_with_details=days_with_details,
-            schedule_data=formatted_data,
-        )
-
-        # Save the HTML to a file
-        with open(output_html_path, "w") as f:
-            f.write(html_content)
-
-        print(f"HTML table saved to {output_html_path}")
 
     def format_schedule_data(self, schedule_data):
         """Format the schedule data into the structure required for rendering."""
@@ -759,28 +632,6 @@ class SessionScheduler:
             formatted_data.append(week_data)
 
         return formatted_data
-
-    def convert_html_to_image(
-        self, input_html_path="schedule.html", output_image_path="schedule.png"
-    ):
-        """Convert an HTML file to an image."""
-        # Options for wkhtmltoimage
-        options = {
-            "format": "png",  # Output format
-            "quality": "100",  # Image quality
-            "encoding": "UTF-8",  # Encoding
-            "width": 1250,  # Set a fixed width for the image
-            # "height": 0,  # Set a fixed height for the image
-            "disable-smart-width": "",  # Disable smart width to capture full content width
-            "zoom": 1.0,  # Adjust zoom level to preserve proportions
-        }
-
-        # Convert the HTML file to an image
-        try:
-            imgkit.from_file(input_html_path, output_image_path, options=options)
-            print(f"Image saved to {output_image_path}")
-        except Exception as e:
-            print(f"Error converting HTML to image: {e}")
 
     def solve_group_scheduling(self):
         """Solve the scheduling problem."""
