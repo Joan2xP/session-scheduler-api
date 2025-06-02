@@ -7,6 +7,7 @@ from django.http import JsonResponse
 from django.http import HttpRequest
 from django.core.handlers.wsgi import WSGIRequest
 from rest_framework.decorators import api_view
+from django.utils.text import camel_case_to_spaces
 
 
 class ExhibitorList(APIView):
@@ -35,7 +36,6 @@ def generateScheduleData(request):
     # based on the year and month provided.
     start_date = f"{year}-{month:02d}-01"
     schedule_generator = SessionScheduler(
-        excel_path="/home/joanpp/coding/task-manager-services/django/exhibitors/assets/people_availability.xlsx",
         start_date=start_date,
         exclude_days=[],
     )
@@ -62,3 +62,40 @@ class ParticipantList(APIView):
     def post(self, request):
 
         return Response({"message": "POST request received"})
+
+
+class ParticipantCrud(APIView):
+    def put(self, request, id):
+        try:
+            print("Updating participant with ID:", id)
+            participant = Participant.objects.get(pk=id)
+            print("Participant found:", participant)
+            # Convert camelCase keys in request.data to snake_case
+
+            def camel_to_snake(name):
+                return camel_case_to_spaces(name).replace(" ", "_")
+
+            data = {}
+            print("Request data:")
+            print(request.data)
+            for key, value in request.data.items():
+                print(f"Processing key: {key}, value: {value}")
+                data[camel_to_snake(key)] = value
+
+            print("Data to be updated:", data)
+            serializer = ParticipantSerializer(participant, data=data)
+
+            serializer = ParticipantSerializer(participant, data=request.data)
+            print("Serializer data:", request.data)
+            if serializer.is_valid():
+                serializer.save()
+                return Response(serializer.data)
+            return Response(serializer.errors, status=400)
+        except Exception as e:
+            print("Error occurred:", str(e))
+            return Response({"error": str(e)}, status=400)
+
+    def delete(self, request, id):
+        participant = Participant.objects.get(pk=id)
+        participant.delete()
+        return Response(status=204)
