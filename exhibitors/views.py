@@ -64,6 +64,10 @@ class ParticipantList(APIView):
         return Response({"message": "POST request received"})
 
 
+def camel_to_snake(name):
+    return camel_case_to_spaces(name).replace(" ", "_")
+
+
 class ParticipantCrud(APIView):
     def put(self, request, id):
         try:
@@ -71,9 +75,6 @@ class ParticipantCrud(APIView):
             participant = Participant.objects.get(pk=id)
             print("Participant found:", participant)
             # Convert camelCase keys in request.data to snake_case
-
-            def camel_to_snake(name):
-                return camel_case_to_spaces(name).replace(" ", "_")
 
             data = {}
             print("Request data:")
@@ -85,8 +86,7 @@ class ParticipantCrud(APIView):
             print("Data to be updated:", data)
             serializer = ParticipantSerializer(participant, data=data)
 
-            serializer = ParticipantSerializer(participant, data=request.data)
-            print("Serializer data:", request.data)
+            print("Serializer data:", data)
             if serializer.is_valid():
                 serializer.save()
                 return Response(serializer.data)

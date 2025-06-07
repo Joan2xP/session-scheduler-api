@@ -308,6 +308,8 @@ class SessionScheduler:
         for row in self.rows:
             person = row["Name"]
             exclude = row.get("Exclude", [])
+            if not exclude:
+                continue
             for excluded_person in exclude:
                 if excluded_person in self.people:
                     for day, session in self.available_days_and_sessions:
