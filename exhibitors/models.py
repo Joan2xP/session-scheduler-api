@@ -10,6 +10,8 @@ class Exhibitor(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     day_details = models.JSONField(default=list)
     schedule_data = models.JSONField(default=list)
+    schedule_statistics = models.JSONField(default=list)
+    days_with_details = models.JSONField(default=list)
 
     def __str__(self):
         return self.name

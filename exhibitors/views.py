@@ -16,9 +16,51 @@ class ExhibitorList(APIView):
         serializer = ExhibitorSerializer(exhibitors, many=True)
         return Response(serializer.data)
 
-    def post(self, request):
 
-        return Response({"message": "POST request received"})
+class ExhibitorDetail(APIView):
+    def get(self, request, year, month):
+        exhibitor = Exhibitor.objects.get(year=year, month=month)
+        serializer = ExhibitorSerializer(exhibitor)
+        return Response(serializer.data)
+
+    def post(self, request: HttpRequest, year, month):
+        try:
+            year = int(year)
+        except ValueError:
+            return JsonResponse({"error": "Year must be an integer"}, status=400)
+        try:
+            month = int(month)
+        except ValueError:
+            return JsonResponse({"error": "Month must be an integer"}, status=400)
+        schedule_data = request.data.get("scheduleData")
+        schedule_statistics = request.data.get("statistics")
+        days_with_details = request.data.get("daysWithDetails")
+        exhibitor, created = Exhibitor.objects.get_or_create(year=year, month=month)
+        if not created:
+            return JsonResponse(
+                {"error": "El horario ya existe para este mes"}, status=400
+            )
+        exhibitor.schedule_data = schedule_data
+        exhibitor.schedule_statistics = schedule_statistics
+        exhibitor.days_with_details = days_with_details
+        exhibitor.save()
+        return JsonResponse(
+            {"message": "Schedule data stored successfully"}, status=200
+        )
+
+    def put(self, request, year, month):
+
+        schedule_data = request.data.get("scheduleData")
+        schedule_statistics = request.data.get("statistics")
+        days_with_details = request.data.get("daysWithDetails")
+        exhibitor = Exhibitor.objects.get(year=year, month=month)
+        exhibitor.schedule_data = schedule_data
+        exhibitor.schedule_statistics = schedule_statistics
+        exhibitor.days_with_details = days_with_details
+        exhibitor.save()
+        return JsonResponse(
+            {"message": "Schedule data updated successfully"}, status=200
+        )
 
 
 @api_view(["POST"])
@@ -59,16 +101,13 @@ class ParticipantList(APIView):
         serializer = ParticipantSerializer(participants, many=True)
         return Response(serializer.data)
 
-    def post(self, request):
-
-        return Response({"message": "POST request received"})
-
 
 def camel_to_snake(name):
     return camel_case_to_spaces(name).replace(" ", "_")
 
 
 class ParticipantCrud(APIView):
+
     def put(self, request, id):
         try:
             print("Updating participant with ID:", id)

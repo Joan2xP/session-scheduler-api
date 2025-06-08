@@ -5,7 +5,23 @@ from .models import Exhibitor, Participant
 class ExhibitorSerializer(serializers.ModelSerializer):
     class Meta:
         model = Exhibitor
-        fields = "__all__"  # Include all fields in the model
+        fields = [
+            "year",
+            "month",
+            "schedule_data",
+            "schedule_statistics",
+            "days_with_details",
+        ]  # Include all fields in the model
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+
+        # Convert keys from snake_case to camelCase
+        def camelize(s):
+            parts = s.split("_")
+            return parts[0] + "".join(word.capitalize() for word in parts[1:])
+
+        return {camelize(key): value for key, value in data.items()}
 
 
 class ParticipantSerializer(serializers.ModelSerializer):
