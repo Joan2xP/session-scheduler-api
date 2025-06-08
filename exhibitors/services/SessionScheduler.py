@@ -601,21 +601,26 @@ class SessionScheduler:
         current_week_number = None
         week_data = {"week_number": None, "days": []}
 
+        # Get the first day of the month
+        first_day = datetime.strptime(self.start_date, "%Y-%m-%d")
+
         for entry in schedule_data:
-            # Extract the week number from the date
+            # Extract the date from the entry
             date_obj = datetime.strptime(
                 f"{entry['Date'].split(' ')[1]}-{self.start_date.split('-')[1]}-{self.start_date.split('-')[0]}",
                 "%d-%m-%Y",
             )
-            week_number = date_obj.isocalendar()[1]
+
+            # Calculate week number based on days from start of month
+            days_from_start = (date_obj - first_day).days
+            week_number = (days_from_start // 7) + 1
 
             # If the week changes, start a new week
             if current_week_number != week_number:
                 if week_data["week_number"] is not None:
                     formatted_data.append(week_data)
                 week_data = {
-                    "week_number": week_number
-                    - (date_obj.replace(day=1).isocalendar()[1] - 1),
+                    "week_number": week_number,
                     "days": [],
                 }
                 current_week_number = week_number
