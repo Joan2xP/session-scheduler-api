@@ -20,7 +20,7 @@ class Exhibitor(models.Model):
 class Participant(models.Model):
     name = models.CharField(max_length=255, unique=True)
     availability = models.JSONField(default=None, null=True)
-    partner = models.CharField(max_length=255)
+    partner = models.CharField(max_length=255, default=None, null=True)
     max_per_week = models.IntegerField()
     max_per_month = models.IntegerField()
     min_per_month = models.IntegerField()

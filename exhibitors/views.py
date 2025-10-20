@@ -79,12 +79,22 @@ def generateScheduleData(request):
     start_date = f"{year}-{month:02d}-01"
     schedule_generator = SessionScheduler(
         start_date=start_date,
-        exclude_days=[],
+        selected_days_sessions={
+            "mon": [1],  # Monday afternoon
+            "wed": [0],  # Wednesday morning
+            "thu": [1],  # Thursday afternoon
+            "fri": [0],  # Friday morning
+            "sat": [0],  # Saturday morning
+        },
+        exclude_days=[11],
     )
 
-    schedule_data, schedule_statistics, days_with_details = (
-        schedule_generator.solve_group_scheduling()
-    )
+    res = schedule_generator.solve_group_scheduling()
+
+    if not res:
+        return JsonResponse({"error": "Could not generate schedule"}, status=500)
+
+    schedule_data, schedule_statistics, days_with_details = res
 
     return JsonResponse(
         {
@@ -120,7 +130,7 @@ class ParticipantCrud(APIView):
             print(request.data)
             for key, value in request.data.items():
                 print(f"Processing key: {key}, value: {value}")
-                data[camel_to_snake(key)] = value
+                data[camel_to_snake(key)] = value if value == 0 or value else None
 
             print("Data to be updated:", data)
             serializer = ParticipantSerializer(participant, data=data)
@@ -129,6 +139,7 @@ class ParticipantCrud(APIView):
             if serializer.is_valid():
                 serializer.save()
                 return Response(serializer.data)
+            print("Serializer errors:", serializer.errors)
             return Response(serializer.errors, status=400)
         except Exception as e:
             print("Error occurred:", str(e))

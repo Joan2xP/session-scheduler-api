@@ -58,7 +58,7 @@ class SessionScheduler:
         }
         self.time_slots = {
             0: {
-                0: ("MAÑANA", "10:00 a 12:00"),
+                0: ("MAÑANA", "10:30 a 12:30"),
                 1: ("TARDE", "17:30 a 19:30"),
             },
         }
@@ -169,7 +169,7 @@ class SessionScheduler:
         for row in self.rows:
             person = row["Name"]
             partner = row.get("Partner", "")
-            if partner != "":
+            if partner:
                 self.partners[person] = partner
 
         # Extract max attendance constraints
@@ -218,6 +218,10 @@ class SessionScheduler:
                 person
             ]  # Get the minimum sessions per month
             if len(self.available_days_and_sessions) <= 20:
+                min_per_month -= 3
+                if min_per_month < 0:
+                    min_per_month = 0
+            elif len(self.available_days_and_sessions) <= 20:
                 if min_per_month > 4:
                     min_per_month = 4
             month_vars = [
@@ -553,6 +557,8 @@ class SessionScheduler:
                 ],
                 [],
             )
+            if not selected_sessions:
+                continue
             location = self.location_mapping.get(day_index, "Unknown Location")
             time_period, time_range = self.time_slots[0][
                 selected_sessions[0]
@@ -612,8 +618,10 @@ class SessionScheduler:
             )
 
             # Calculate week number based on days from start of month
-            days_from_start = (date_obj - first_day).days
-            week_number = (days_from_start // 7) + 1
+            # Get the weekday of the first day of the month (0=Monday, 6=Sunday)
+            first_day_weekday = first_day.weekday()
+            # Calculate week of month (1-based)
+            week_number = ((date_obj.day + first_day_weekday - 1) // 7) + 1
 
             # If the week changes, start a new week
             if current_week_number != week_number:
@@ -649,7 +657,9 @@ class SessionScheduler:
         self.add_monthly_constraints()
         self.add_group_size_constraints()
         self.add_partner_constraints()
+
         self.add_minimum_monthly_constraints()
+
         self.add_exclusion_constraints()
         self.add_only_days_of_month_constraints()
         self.add_exclude_days_of_month_constraints()
