@@ -71,6 +71,7 @@ class SessionScheduler:
         self.attendance = {}
         self.only_days_of_month = {}
         self.exclude_days_of_month = {}
+        self.enforced_week_days = {}
 
         # Preprocess available days and sessions
         self.available_days_and_sessions = []
@@ -96,6 +97,7 @@ class SessionScheduler:
                 "Partner": getattr(p, "partner", None),
                 "Exclude": getattr(p, "exclude", ""),
                 "Min Days Together": getattr(p, "min_days_together", ""),
+                "Enforced Week Days": getattr(p, "enforced_week_days", ""),
             }
             for p in participants
         ]
@@ -164,6 +166,11 @@ class SessionScheduler:
             exclude_days = row.get("Exclude Days of Month", "")
             if pd.notna(exclude_days):
                 self.exclude_days_of_month[person] = exclude_days
+
+            # Parse Enforced Week Days
+            enforced_week_days = row.get("Enforced Week Days", "")
+            if pd.notna(enforced_week_days) and enforced_week_days:
+                self.enforced_week_days[person] = enforced_week_days
 
         # Extract partner constraints
         for row in self.rows:
@@ -470,6 +477,21 @@ class SessionScheduler:
                 if together_vars:
                     self.model.Add(sum(together_vars) >= int(min_sessions))
 
+    def add_enforced_week_days_constraints(self):
+        """Ensure people are scheduled on their enforced week days."""
+        for person, enforced_days in self.enforced_week_days.items():
+            if enforced_days:  # If the person has enforced week days
+                for day, session in self.available_days_and_sessions:
+                    current_date = datetime.strptime(
+                        self.start_date, "%Y-%m-%d"
+                    ) + timedelta(days=day)
+                    day_of_week = current_date.weekday()  # 0 = Monday, 6 = Sunday
+
+                    # Check if this day of the week is in the enforced days
+                    if day_of_week in enforced_days:
+                        # Force the person to attend this session
+                        self.model.Add(self.attendance[person][day][session] == 1)
+
     def initialize_solver(self):
         """Initialize the solver and set parameters."""
         solver = cp_model.CpSolver()
@@ -664,6 +686,7 @@ class SessionScheduler:
         self.add_only_days_of_month_constraints()
         self.add_exclude_days_of_month_constraints()
         self.add_min_days_together_constraints()
+        self.add_enforced_week_days_constraints()
 
         # Set the objective
         self.add_diversity_objective()

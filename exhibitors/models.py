@@ -28,6 +28,7 @@ class Participant(models.Model):
     exclude = models.JSONField(default=None, null=True)
     exclude_days_of_month = models.JSONField(default=None, null=True)
     min_days_together = models.JSONField(default=None, null=True)
+    enforced_week_days = models.JSONField(default=None, null=True)
 
     def __str__(self):
         return f"Participant {self.id}"
