@@ -116,7 +116,7 @@ def generateScheduleData(request):
                 "fri": [0],  # Friday morning
                 "sat": [0],  # Saturday morning
             },
-            exclude_days=[11],
+            exclude_days=[25],
         )
 
         res = schedule_generator.solve_group_scheduling()
