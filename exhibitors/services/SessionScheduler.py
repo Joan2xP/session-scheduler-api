@@ -164,13 +164,36 @@ class SessionScheduler:
 
             # Parse Exclude Days of Month
             exclude_days = row.get("Exclude Days of Month", "")
-            if pd.notna(exclude_days):
-                self.exclude_days_of_month[person] = exclude_days
+            # Check if exclude_days is not None/empty and is a valid list
+            # Avoid using pd.notna() on lists/arrays as it causes ambiguous truth value errors
+            if exclude_days is not None and exclude_days != "":
+                # Convert to list if needed and check if it has content
+                if isinstance(exclude_days, (list, tuple)):
+                    if len(exclude_days) > 0:
+                        self.exclude_days_of_month[person] = list(exclude_days)
+                elif hasattr(exclude_days, "__iter__") and not isinstance(
+                    exclude_days, str
+                ):
+                    # Handle pandas Series, numpy array, etc.
+                    exclude_list = list(exclude_days)
+                    if len(exclude_list) > 0:
+                        self.exclude_days_of_month[person] = exclude_list
 
             # Parse Enforced Week Days
             enforced_week_days = row.get("Enforced Week Days", "")
-            if pd.notna(enforced_week_days) and enforced_week_days:
-                self.enforced_week_days[person] = enforced_week_days
+            # Avoid using pd.notna() on lists/arrays as it causes ambiguous truth value errors
+            if enforced_week_days is not None and enforced_week_days != "":
+                # Convert to list if needed and check if it has content
+                if isinstance(enforced_week_days, (list, tuple)):
+                    if len(enforced_week_days) > 0:
+                        self.enforced_week_days[person] = list(enforced_week_days)
+                elif hasattr(enforced_week_days, "__iter__") and not isinstance(
+                    enforced_week_days, str
+                ):
+                    # Handle pandas Series, numpy array, etc.
+                    enforced_list = list(enforced_week_days)
+                    if len(enforced_list) > 0:
+                        self.enforced_week_days[person] = enforced_list
 
         # Extract partner constraints
         for row in self.rows:
@@ -440,7 +463,12 @@ class SessionScheduler:
 
             # Parse the Min Days Together column
             min_days_together = row.get("Min Days Together", "")
-            if pd.notna(min_days_together) and min_days_together != {}:
+            # Avoid using pd.notna() on dicts/arrays as it causes ambiguous truth value errors
+            if (
+                min_days_together is not None
+                and min_days_together != ""
+                and min_days_together != {}
+            ):
                 print(f"Min Days Together for {person}: {min_days_together}")
                 day_name = min_days_together.get("day")
                 min_sessions = min_days_together.get("amount")
