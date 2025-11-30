@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import Exhibitor, Participant
+from django.utils.text import camel_case_to_spaces
 
 
 class ExhibitorSerializer(serializers.ModelSerializer):
@@ -28,6 +29,20 @@ class ParticipantSerializer(serializers.ModelSerializer):
     class Meta:
         model = Participant
         fields = "__all__"  # Include all fields in the model
+
+    def to_internal_value(self, data):
+        """Convert camelCase keys to snake_case for internal processing"""
+        def camel_to_snake(name):
+            return camel_case_to_spaces(name).replace(" ", "_")
+        
+        # Convert camelCase keys to snake_case
+        snake_case_data = {}
+        for key, value in data.items():
+            snake_key = camel_to_snake(key)
+            # Fix the value conversion bug: preserve 0 and other falsy values properly
+            snake_case_data[snake_key] = value
+        
+        return super().to_internal_value(snake_case_data)
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

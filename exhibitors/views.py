@@ -1,16 +1,19 @@
+import logging
+from rest_framework import viewsets, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from rest_framework.decorators import api_view
+from django.core.exceptions import ValidationError
 from .models import Exhibitor, Participant
 from .serializers import ExhibitorSerializer, ParticipantSerializer
 from .services.SessionScheduler import SessionScheduler
-from django.http import JsonResponse
-from django.http import HttpRequest
-from django.core.handlers.wsgi import WSGIRequest
-from rest_framework.decorators import api_view
-from django.utils.text import camel_case_to_spaces
+
+logger = logging.getLogger(__name__)
 
 
 class ExhibitorList(APIView):
+    """List all exhibitors"""
+
     def get(self, request):
         exhibitors = Exhibitor.objects.all()
         serializer = ExhibitorSerializer(exhibitors, many=True)
@@ -18,134 +21,136 @@ class ExhibitorList(APIView):
 
 
 class ExhibitorDetail(APIView):
-    def get(self, request, year, month):
-        exhibitor = Exhibitor.objects.get(year=year, month=month)
-        serializer = ExhibitorSerializer(exhibitor)
-        return Response(serializer.data)
+    """Retrieve, create, or update an exhibitor by year and month"""
 
-    def post(self, request: HttpRequest, year, month):
+    def get(self, request, year, month):
         try:
-            year = int(year)
-        except ValueError:
-            return JsonResponse({"error": "Year must be an integer"}, status=400)
-        try:
-            month = int(month)
-        except ValueError:
-            return JsonResponse({"error": "Month must be an integer"}, status=400)
+            exhibitor = Exhibitor.objects.get(year=year, month=month)
+            serializer = ExhibitorSerializer(exhibitor)
+            return Response(serializer.data)
+        except Exhibitor.DoesNotExist:
+            return Response(
+                {"error": f"Exhibitor not found for year {year}, month {month}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+    def post(self, request, year, month):
+        """Create a new exhibitor schedule"""
         schedule_data = request.data.get("scheduleData")
         schedule_statistics = request.data.get("statistics")
         days_with_details = request.data.get("daysWithDetails")
+
         exhibitor, created = Exhibitor.objects.get_or_create(year=year, month=month)
         if not created:
-            return JsonResponse(
-                {"error": "El horario ya existe para este mes"}, status=400
+            return Response(
+                {"error": "Schedule already exists for this month"},
+                status=status.HTTP_400_BAD_REQUEST,
             )
+
         exhibitor.schedule_data = schedule_data
         exhibitor.schedule_statistics = schedule_statistics
         exhibitor.days_with_details = days_with_details
         exhibitor.save()
-        return JsonResponse(
-            {"message": "Schedule data stored successfully"}, status=200
-        )
+
+        serializer = ExhibitorSerializer(exhibitor)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     def put(self, request, year, month):
+        """Update an existing exhibitor schedule"""
+        try:
+            exhibitor = Exhibitor.objects.get(year=year, month=month)
+        except Exhibitor.DoesNotExist:
+            return Response(
+                {"error": f"Exhibitor not found for year {year}, month {month}"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         schedule_data = request.data.get("scheduleData")
         schedule_statistics = request.data.get("statistics")
         days_with_details = request.data.get("daysWithDetails")
-        exhibitor = Exhibitor.objects.get(year=year, month=month)
+
         exhibitor.schedule_data = schedule_data
         exhibitor.schedule_statistics = schedule_statistics
         exhibitor.days_with_details = days_with_details
         exhibitor.save()
-        return JsonResponse(
-            {"message": "Schedule data updated successfully"}, status=200
-        )
+
+        serializer = ExhibitorSerializer(exhibitor)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
 def generateScheduleData(request):
+    """Generate schedule data for a given year and month"""
     year = request.data.get("year")
     month = request.data.get("month")
+
     if not year or not month:
-        return JsonResponse({"error": "Year and month are required"}, status=400)
+        return Response(
+            {"error": "Year and month are required"}, status=status.HTTP_400_BAD_REQUEST
+        )
+
     try:
         year = int(year)
         month = int(month)
+
+        # Validate month range
+        if not (1 <= month <= 12):
+            return Response(
+                {"error": "Month must be between 1 and 12"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
     except ValueError:
-        return JsonResponse({"error": "Year and month must be integers"}, status=400)
-    # Here you would implement the logic to generate the schedule data
-    # based on the year and month provided.
-    start_date = f"{year}-{month:02d}-01"
-    schedule_generator = SessionScheduler(
-        start_date=start_date,
-        selected_days_sessions={
-            "mon": [1],  # Monday afternoon
-            "wed": [0],  # Wednesday morning
-            "thu": [1],  # Thursday afternoon
-            "fri": [0],  # Friday morning
-            "sat": [0],  # Saturday morning
-        },
-        exclude_days=[11],
-    )
+        return Response(
+            {"error": "Year and month must be integers"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
-    res = schedule_generator.solve_group_scheduling()
+    try:
+        start_date = f"{year}-{month:02d}-01"
+        schedule_generator = SessionScheduler(
+            start_date=start_date,
+            selected_days_sessions={
+                "mon": [1],  # Monday afternoon
+                "wed": [0],  # Wednesday morning
+                "thu": [1],  # Thursday afternoon
+                "fri": [0],  # Friday morning
+                "sat": [0],  # Saturday morning
+            },
+            exclude_days=[11],
+        )
 
-    if not res:
-        return JsonResponse({"error": "Could not generate schedule"}, status=500)
+        res = schedule_generator.solve_group_scheduling()
 
-    schedule_data, schedule_statistics, days_with_details = res
+        if not res:
+            return Response(
+                {"error": "Could not generate schedule"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
-    return JsonResponse(
-        {
-            "scheduleData": schedule_data,
-            "statistics": schedule_statistics,
-            "daysWithDetails": days_with_details,
-        }
-    )
+        schedule_data, schedule_statistics, days_with_details = res
+
+        return Response(
+            {
+                "scheduleData": schedule_data,
+                "statistics": schedule_statistics,
+                "daysWithDetails": days_with_details,
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as e:
+        logger.error(f"Error generating schedule: {str(e)}", exc_info=True)
+        return Response(
+            {"error": "An error occurred while generating the schedule"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
-class ParticipantList(APIView):
-    def get(self, request):
-        participants = Participant.objects.all()
-        serializer = ParticipantSerializer(participants, many=True)
-        return Response(serializer.data)
+class ParticipantViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for viewing and editing Participant instances.
+    Provides list, create, retrieve, update, partial_update, and destroy actions.
+    """
 
-
-def camel_to_snake(name):
-    return camel_case_to_spaces(name).replace(" ", "_")
-
-
-class ParticipantCrud(APIView):
-
-    def put(self, request, id):
-        try:
-            print("Updating participant with ID:", id)
-            participant = Participant.objects.get(pk=id)
-            print("Participant found:", participant)
-            # Convert camelCase keys in request.data to snake_case
-
-            data = {}
-            print("Request data:")
-            print(request.data)
-            for key, value in request.data.items():
-                print(f"Processing key: {key}, value: {value}")
-                data[camel_to_snake(key)] = value if value == 0 or value else None
-
-            print("Data to be updated:", data)
-            serializer = ParticipantSerializer(participant, data=data)
-
-            print("Serializer data:", data)
-            if serializer.is_valid():
-                serializer.save()
-                return Response(serializer.data)
-            print("Serializer errors:", serializer.errors)
-            return Response(serializer.errors, status=400)
-        except Exception as e:
-            print("Error occurred:", str(e))
-            return Response({"error": str(e)}, status=400)
-
-    def delete(self, request, id):
-        participant = Participant.objects.get(pk=id)
-        participant.delete()
-        return Response(status=204)
+    queryset = Participant.objects.all()
+    serializer_class = ParticipantSerializer
+    lookup_field = "id"
