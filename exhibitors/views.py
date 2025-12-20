@@ -86,18 +86,22 @@ class ExhibitorDetail(APIView):
 
 @api_view(["POST"])
 def generateScheduleData(request):
-    """Generate schedule data for a given year and month"""
+    """Generate schedule data for a given year, month, and session group"""
     year = request.data.get("year")
     month = request.data.get("month")
+    session_group_id = request.data.get("sessionGroupId")
+    exclude_session_occurrences = request.data.get("excludeSessionOccurrences", [])
 
-    if not year or not month:
+    if not year or not month or not session_group_id:
         return Response(
-            {"error": "Year and month are required"}, status=status.HTTP_400_BAD_REQUEST
+            {"error": "Year, month, and sessionGroupId are required"},
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
     try:
         year = int(year)
         month = int(month)
+        session_group_id = int(session_group_id)
 
         # Validate month range
         if not (1 <= month <= 12):
@@ -105,9 +109,18 @@ def generateScheduleData(request):
                 {"error": "Month must be between 1 and 12"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        # Validate session_group_id exists
+        try:
+            SessionGroup.objects.get(id=session_group_id)
+        except SessionGroup.DoesNotExist:
+            return Response(
+                {"error": f"SessionGroup with id {session_group_id} does not exist"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
     except ValueError:
         return Response(
-            {"error": "Year and month must be integers"},
+            {"error": "Year, month, and sessionGroupId must be integers"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -115,14 +128,10 @@ def generateScheduleData(request):
         start_date = f"{year}-{month:02d}-01"
         schedule_generator = SessionScheduler(
             start_date=start_date,
-            selected_days_sessions={
-                "mon": [1],  # Monday afternoon
-                "wed": [0],  # Wednesday morning
-                "thu": [1],  # Thursday afternoon
-                "fri": [0],  # Friday morning
-                "sat": [0],  # Saturday morning
-            },
-            exclude_days=[25],
+            session_group_id=session_group_id,
+            exclude_session_occurrences=exclude_session_occurrences,
+            weekday_group_size=4,
+            weekend_group_size=3,
         )
 
         res = schedule_generator.solve_group_scheduling()
