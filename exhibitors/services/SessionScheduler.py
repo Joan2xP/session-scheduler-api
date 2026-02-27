@@ -690,6 +690,7 @@ class SessionScheduler:
                         "Time_Range": time_range,
                         "Location": location,
                         "Members": "No hay carritos",
+                        "sessionId": session_id,
                     }
                 )
             else:
@@ -715,6 +716,7 @@ class SessionScheduler:
                         "Time_Range": time_range,
                         "Location": location,
                         "Members": ", ".join(members),
+                        "sessionId": session_id,
                     }
                 )
 
@@ -757,7 +759,12 @@ class SessionScheduler:
             )
 
             days_with_details.append(
-                {"day": day_name, "location": location, "time": time_range}
+                {
+                    "day": day_name,
+                    "location": location,
+                    "time": time_range,
+                    "sessionId": session_id,
+                }
             )
 
         return days_with_details
@@ -828,16 +835,17 @@ class SessionScheduler:
                     formatted_data.append(week_data)
                 week_data = {
                     "week_number": week_number,
-                    "days": [],
+                    "sessions": [],
                 }
                 current_week_number = week_number
 
             # Add the day to the current week
-            week_data["days"].append(
+            week_data["sessions"].append(
                 {
                     "name": entry["Date"].split(" ")[0],  # Day name (e.g., "Monday")
                     "date": date_obj.day,  # Day of the month (e.g., 1, 2, 3)
                     "members": entry["Members"].split(", ") if entry["Members"] else [],
+                    "sessionId": entry["sessionId"],
                 }
             )
 
