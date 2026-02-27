@@ -6,6 +6,7 @@ import os
 from jinja2 import Template
 import imgkit
 import argparse
+from django.db.models import Case, When, Value, IntegerField
 from exhibitors.models import Participant, Session, SessionGroup
 import random
 
@@ -98,8 +99,22 @@ class SessionScheduler:
         random.shuffle(self.rows)  # Shuffle the rows to randomize the order
         self.n_people = len(self.people)
 
-        # Fetch and cache sessions for this session group
-        sessions = Session.objects.filter(session_group_id=self.session_group_id)
+        # Fetch and cache sessions for this session group, sorted by frequency and time
+        sessions = Session.objects.filter(session_group_id=self.session_group_id).order_by(
+            Case(
+                When(frequency="daily", then=Value(0)),
+                When(frequency="weekly", then=Value(1)),
+                When(frequency="monthly", then=Value(2)),
+                When(frequency="yearly", then=Value(3)),
+                default=Value(4),
+                output_field=IntegerField(),
+            ),
+            "day_of_week",
+            "week",
+            "month",
+            "start_hour",
+            "start_minute",
+        )
         for session in sessions:
             self.sessions_cache[session.id] = session
             self.session_metadata[session.id] = {
