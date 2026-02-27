@@ -9,9 +9,8 @@ Jinja2==3.1.6
 MarkupSafe==3.0.2
 numpy==2.2.5
 openpyxl==3.1.5
-ortools==9.12.4544
+ortools==9.15.6755
 pandas==2.2.3
-protobuf==5.29.4
 python-dateutil==2.9.0.post0
 pytz==2025.2
 requests==2.32.3
@@ -21,3 +20,6 @@ tzdata==2025.2
 urllib3==2.4.0
 XlsxWriter==3.2.3
 django-cors-headers==4.3.1
+
+Django
+djangorestframework

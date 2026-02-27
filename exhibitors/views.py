@@ -431,11 +431,25 @@ class SessionGroupDetail(APIView):
 
             # Update nested sessions if provided
             if sessions_data is not None:
-                # Delete existing sessions
-                group.sessions.all().delete()
-                # Create new sessions
+                # Get IDs of sessions that should be kept/updated
+                session_ids = [s.get("id") for s in sessions_data if s.get("id")]
+                
+                # Delete sessions not in the new array
+                group.sessions.exclude(id__in=session_ids).delete()
+                
+                # Update or create sessions
                 for session_data in sessions_data:
-                    session_serializer = SessionSerializer(data=session_data)
+                    session_id = session_data.get("id")
+                    if session_id:
+                        session = get_object_or_404(
+                            Session, id=session_id, session_group=group
+                        )
+                        session_serializer = SessionSerializer(
+                            session, data=session_data
+                        )
+                    else:
+                        session_serializer = SessionSerializer(data=session_data)
+
                     if session_serializer.is_valid():
                         session_serializer.save(session_group=group)
                     else:

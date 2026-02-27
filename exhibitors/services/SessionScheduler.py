@@ -284,6 +284,7 @@ class SessionScheduler:
                     if not isinstance(occ, dict):
                         invalid_format = True
                         break
+                    print(f"{participant_id}: only_session_occurrences: {occ}")
                     session_id = occ.get("sessionId")
                     date_str = occ.get("date")
                     if session_id is not None and date_str:
