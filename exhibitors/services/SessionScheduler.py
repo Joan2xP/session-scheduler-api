@@ -100,7 +100,9 @@ class SessionScheduler:
         self.n_people = len(self.people)
 
         # Fetch and cache sessions for this session group, sorted by frequency and time
-        sessions = Session.objects.filter(session_group_id=self.session_group_id).order_by(
+        sessions = Session.objects.filter(
+            session_group_id=self.session_group_id
+        ).order_by(
             Case(
                 When(frequency="daily", then=Value(0)),
                 When(frequency="weekly", then=Value(1)),
@@ -279,6 +281,8 @@ class SessionScheduler:
 
     def add_only_session_occurrences_constraints(self):
         """Ensure each participant is only scheduled on their specified session occurrences."""
+        all_sessions_set = set(self.all_available_sessions)
+
         for participant_id, only_occurrences in self.only_session_occurrences.items():
             if only_occurrences:
                 # Validate format: must be list of {sessionId, date} objects
@@ -314,15 +318,33 @@ class SessionScheduler:
                     )
                     continue
 
+                # Validate that each allowed occurrence actually exists in the month
+                valid_allowed = set()
+                for occ in allowed_occurrences:
+                    if occ in all_sessions_set:
+                        valid_allowed.add(occ)
+                    else:
+                        import logging
+
+                        logging.warning(
+                            f"Participant {participant_id}: only_session_occurrences contains "
+                            f"invalid occurrence {occ} (not a valid session in this month). Skipping."
+                        )
+
+                if not valid_allowed:
+                    continue
+
                 # For each available session, if not in allowed list, prevent attendance
                 for session_id, date in self.available_sessions:
-                    if (session_id, date) not in allowed_occurrences:
+                    if (session_id, date) not in valid_allowed:
                         self.model.Add(
                             self.attendance[participant_id][(session_id, date)] == 0
                         )
 
     def add_exclude_session_occurrences_constraints(self):
         """Ensure each participant is not scheduled on their excluded session occurrences."""
+        all_sessions_set = set(self.all_available_sessions)
+
         for (
             participant_id,
             exclude_occurrences,
@@ -360,9 +382,25 @@ class SessionScheduler:
                     )
                     continue
 
+                # Validate that each excluded occurrence actually exists in the month
+                valid_excluded = set()
+                for occ in excluded_set:
+                    if occ in all_sessions_set:
+                        valid_excluded.add(occ)
+                    else:
+                        import logging
+
+                        logging.warning(
+                            f"Participant {participant_id}: exclude_session_occurrences contains "
+                            f"invalid occurrence {occ} (not a valid session in this month). Skipping."
+                        )
+
+                if not valid_excluded:
+                    continue
+
                 # For each available session, if in excluded list, prevent attendance
                 for session_id, date in self.available_sessions:
-                    if (session_id, date) in excluded_set:
+                    if (session_id, date) in valid_excluded:
                         self.model.Add(
                             self.attendance[participant_id][(session_id, date)] == 0
                         )
