@@ -5,10 +5,11 @@ from rest_framework.response import Response
 from rest_framework.decorators import api_view
 from django.core.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
-from .models import Exhibitor, Participant, SessionGroup, Session
+from .models import Exhibitor, Participant, SessionGroup, Session, ParticipantTrait
 from .serializers import (
     ExhibitorSerializer,
     ParticipantSerializer,
+    ParticipantTraitSerializer,
     SessionGroupSerializer,
     SessionSerializer,
 )
@@ -190,7 +191,13 @@ class ParticipantViewSet(viewsets.ModelViewSet):
         # Additional validation for same session group
         self._validate_same_session_group(serializer.validated_data, None)
 
+        traits = serializer.validated_data.pop("traits", [])
         self.perform_create(serializer)
+
+        # Handle M2M traits
+        if traits:
+            serializer.instance.traits.set(traits)
+
         headers = self.get_success_headers(serializer.data)
         return Response(
             serializer.data, status=status.HTTP_201_CREATED, headers=headers
@@ -219,7 +226,13 @@ class ParticipantViewSet(viewsets.ModelViewSet):
         # Additional validation for same session group
         self._validate_same_session_group(serializer.validated_data, instance)
 
+        traits = serializer.validated_data.pop("traits", None)
         self.perform_update(serializer)
+
+        # Handle M2M traits (only if provided)
+        if traits is not None:
+            serializer.instance.traits.set(traits)
+
         return Response(serializer.data)
 
     def partial_update(self, request, *args, **kwargs):
@@ -505,3 +518,61 @@ class SessionDetail(APIView):
         session = get_object_or_404(Session, id=session_id, session_group=group)
         session.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ParticipantTraitViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for viewing and editing ParticipantTrait instances.
+    Provides list, create, retrieve, update, partial_update, and destroy actions.
+    """
+
+    queryset = ParticipantTrait.objects.all()
+    serializer_class = ParticipantTraitSerializer
+    lookup_field = "id"
+
+    def get_queryset(self):
+        """Filter traits by sessionGroupId query parameter if provided"""
+        queryset = ParticipantTrait.objects.all()
+        session_group_id = self.request.query_params.get("sessionGroupId")
+        if session_group_id:
+            try:
+                queryset = queryset.filter(session_group_id=int(session_group_id))
+            except ValueError:
+                queryset = queryset.none()
+        return queryset
+
+    def create(self, request, *args, **kwargs):
+        """Create a new trait"""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        participants = serializer.validated_data.pop("participants", [])
+        self.perform_create(serializer)
+
+        if participants:
+            serializer.instance.participants.set(participants)
+
+        headers = self.get_success_headers(serializer.data)
+        return Response(
+            serializer.data, status=status.HTTP_201_CREATED, headers=headers
+        )
+
+    def update(self, request, *args, **kwargs):
+        """Update a trait"""
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+
+        participants = serializer.validated_data.pop("participants", None)
+        self.perform_update(serializer)
+
+        if participants is not None:
+            serializer.instance.participants.set(participants)
+
+        return Response(serializer.data)
+
+    def partial_update(self, request, *args, **kwargs):
+        """Partial update a trait"""
+        kwargs["partial"] = True
+        return self.update(request, *args, **kwargs)
