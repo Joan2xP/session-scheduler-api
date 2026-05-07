@@ -5,6 +5,7 @@ from .views import (
     ExhibitorList,
     generateScheduleData,
     ParticipantViewSet,
+    ParticipantTraitViewSet,
     SessionGroupList,
     SessionGroupDetail,
     SessionList,
@@ -14,6 +15,7 @@ from .views import (
 # Create a router and register the ParticipantViewSet
 router = DefaultRouter()
 router.register(r"participants", ParticipantViewSet, basename="participant")
+router.register(r"traits", ParticipantTraitViewSet, basename="trait")
 
 urlpatterns = [
     # Exhibitor routes
