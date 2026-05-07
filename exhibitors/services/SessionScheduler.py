@@ -7,7 +7,7 @@ from jinja2 import Template
 import imgkit
 import argparse
 from django.db.models import Case, When, Value, IntegerField
-from exhibitors.models import Participant, Session, SessionGroup
+from exhibitors.models import Participant, Session, SessionGroup, ParticipantTrait
 import random
 
 
@@ -54,6 +54,7 @@ class SessionScheduler:
             {}
         )  # participant_id -> {sessionId, partnerId, amount}
         self.enforced_sessions = {}  # participant_id -> list of session IDs
+        self.traits = {}  # participant_id -> list of ParticipantTrait objects
 
         # Available sessions as (session_id, date) tuples
         self.available_sessions = []
@@ -93,6 +94,7 @@ class SessionScheduler:
                 "min_sessions_together": p.min_sessions_together,  # {sessionId, partnerId, amount} or None
                 "enforced_sessions": p.enforced_week_days
                 or [],  # Array of session IDs (from enforced_week_days field)
+                "traits": list(p.traits.all()),  # List of ParticipantTrait objects
             }
             self.rows.append(row)
 
@@ -271,6 +273,11 @@ class SessionScheduler:
             if enforced and isinstance(enforced, list) and len(enforced) > 0:
                 self.enforced_sessions[participant_id] = enforced
 
+            # Store traits (list of ParticipantTrait objects)
+            traits = row.get("traits", [])
+            if traits:
+                self.traits[participant_id] = traits
+
         # Initialize attendance variables with (session_id, date) keys
         for participant_id in self.people:
             self.attendance[participant_id] = {}
@@ -278,6 +285,48 @@ class SessionScheduler:
                 self.attendance[participant_id][(session_id, date)] = (
                     self.model.NewBoolVar(f"p{participant_id}_s{session_id}_{date}")
                 )
+
+        # Resolve trait-based exclusions
+        self.resolve_trait_exclusions()
+
+    def resolve_trait_exclusions(self):
+        """Convert trait position-based exclusions to (sessionId, date) exclusions."""
+        for participant_id, traits in self.traits.items():
+            for trait in traits:
+                session_id = trait.session_id
+                positions = trait.positions
+
+                # Get all occurrences of this session, sorted by date
+                session_occurrences = sorted(
+                    [(sid, d) for sid, d in self.all_available_sessions if sid == session_id],
+                    key=lambda x: x[1],
+                )
+
+                if not session_occurrences:
+                    continue
+
+                total = len(session_occurrences)
+                resolved = []
+                for pos in positions:
+                    if pos > 0:
+                        # Positive: from start (1-based)
+                        idx = pos - 1
+                        if 0 <= idx < total:
+                            resolved.append(session_occurrences[idx])
+                    elif pos < 0:
+                        # Negative: from end (-1 = last)
+                        idx = total + pos
+                        if 0 <= idx < total:
+                            resolved.append(session_occurrences[idx])
+
+                if resolved:
+                    if participant_id not in self.exclude_session_occurrences_per_participant:
+                        self.exclude_session_occurrences_per_participant[participant_id] = []
+                    existing = self.exclude_session_occurrences_per_participant[participant_id]
+                    existing_set = {(e.get("sessionId"), e.get("date")) for e in existing if isinstance(e, dict)}
+                    for sid, date_str in resolved:
+                        if (sid, date_str) not in existing_set:
+                            existing.append({"sessionId": sid, "date": date_str})
 
     def add_only_session_occurrences_constraints(self):
         """Ensure each participant is only scheduled on their specified session occurrences."""
