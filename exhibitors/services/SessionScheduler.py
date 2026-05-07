@@ -776,7 +776,7 @@ class SessionScheduler:
                         "Time": time_period,
                         "Time_Range": time_range,
                         "Location": location,
-                        "Members": "No hay carritos",
+                        "Members": [],
                         "sessionId": session_id,
                     }
                 )
@@ -793,7 +793,9 @@ class SessionScheduler:
                         name = self.participant_names.get(
                             participant_id, str(participant_id)
                         )
-                        members.append(name)
+                        members.append(
+                            {"name": name, "participantId": participant_id}
+                        )
 
                 # Add to schedule data
                 schedule_data.append(
@@ -802,7 +804,7 @@ class SessionScheduler:
                         "Time": time_period,
                         "Time_Range": time_range,
                         "Location": location,
-                        "Members": ", ".join(members),
+                        "Members": members,
                         "sessionId": session_id,
                     }
                 )
@@ -931,7 +933,7 @@ class SessionScheduler:
                 {
                     "name": entry["Date"].split(" ")[0],  # Day name (e.g., "Monday")
                     "date": date_obj.day,  # Day of the month (e.g., 1, 2, 3)
-                    "members": entry["Members"].split(", ") if entry["Members"] else [],
+                    "members": entry["Members"] if entry["Members"] else [],
                     "sessionId": entry["sessionId"],
                 }
             )
