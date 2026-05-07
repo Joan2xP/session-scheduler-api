@@ -49,6 +49,9 @@ class Participant(models.Model):
         default=None, null=True, blank=True
     )  # Single object {sessionId, partnerId, amount}
     enforced_week_days = models.JSONField(default=None, null=True, blank=True)
+    traits = models.ManyToManyField(
+        "ParticipantTrait", blank=True, related_name="participants"
+    )
 
     def clean(self):
         """Validate that all relations belong to the same session group"""
@@ -268,3 +271,43 @@ class Session(models.Model):
             f"Session {self.id} - {self.frequency} from {self.start_hour:02d}:{self.start_minute:02d} "
             f"to {self.end_hour:02d}:{self.end_minute:02d}"
         )
+
+
+class ParticipantTrait(models.Model):
+    name = models.CharField(max_length=255)
+    session_group = models.ForeignKey(
+        SessionGroup, on_delete=models.CASCADE, related_name="traits"
+    )
+    session = models.ForeignKey(
+        Session, on_delete=models.CASCADE, related_name="traits"
+    )
+    positions = models.JSONField()  # e.g. [1, -1] = exclude 1st and last occurrence
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def clean(self):
+        errors = {}
+
+        if not isinstance(self.positions, list) or len(self.positions) == 0:
+            errors["positions"] = "positions must be a non-empty array"
+        else:
+            for idx, pos in enumerate(self.positions):
+                if not isinstance(pos, int) or pos == 0:
+                    errors["positions"] = (
+                        f"index {idx}: must be a non-zero integer"
+                    )
+                    break
+
+        if self.session and self.session_group:
+            if self.session.session_group_id != self.session_group_id:
+                errors["session"] = "Session must belong to the same session group"
+
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.name
