@@ -1,6 +1,76 @@
 from rest_framework import serializers
-from .models import Exhibitor, Participant, SessionGroup, Session
+from .models import Exhibitor, Participant, SessionGroup, Session, ParticipantTrait
 from django.utils.text import camel_case_to_spaces
+
+
+class ParticipantTraitSerializer(serializers.ModelSerializer):
+    participant_ids = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=Participant.objects.all(),
+        source="participants",
+        required=False,
+    )
+
+    class Meta:
+        model = ParticipantTrait
+        fields = ["id", "name", "session_group", "session", "positions", "participant_ids", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at"]
+        extra_kwargs = {
+            "session_group": {"required": True},
+            "session": {"required": True},
+            "positions": {"required": True},
+        }
+
+    def to_internal_value(self, data):
+        def camel_to_snake(name):
+            return camel_case_to_spaces(name).replace(" ", "_")
+
+        snake_case_data = {}
+        field_mapping = {
+            "sessionGroupId": "session_group",
+            "participantIds": "participant_ids",
+        }
+
+        for key, value in data.items():
+            if key in field_mapping:
+                snake_key = field_mapping[key]
+            else:
+                snake_key = camel_to_snake(key)
+            snake_case_data[snake_key] = value
+
+        return super().to_internal_value(snake_case_data)
+
+    def validate(self, attrs):
+        session = attrs.get("session")
+        session_group = attrs.get("session_group")
+        if session and session_group and session.session_group_id != session_group.id:
+            raise serializers.ValidationError(
+                {"session": "Session must belong to the same session group"}
+            )
+        return attrs
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+
+        def camelize(s):
+            parts = s.split("_")
+            return parts[0] + "".join(word.capitalize() for word in parts[1:])
+
+        result = {}
+        for key, value in data.items():
+            if key == "session_group":
+                result["sessionGroupId"] = value
+            elif key == "session":
+                result["session"] = value
+            elif key == "participant_ids":
+                result["participantIds"] = value
+            elif key == "created_at":
+                result["createdAt"] = value
+            elif key == "updated_at":
+                result["updatedAt"] = value
+            else:
+                result[camelize(key)] = value
+        return result
 
 
 class ExhibitorSerializer(serializers.ModelSerializer):
@@ -26,6 +96,12 @@ class ExhibitorSerializer(serializers.ModelSerializer):
 
 
 class ParticipantSerializer(serializers.ModelSerializer):
+    traits = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=ParticipantTrait.objects.all(),
+        required=False,
+    )
+
     class Meta:
         model = Participant
         fields = "__all__"
@@ -89,6 +165,7 @@ class ParticipantSerializer(serializers.ModelSerializer):
             "maxPerMonth": "max_per_month",
             "minPerMonth": "min_per_month",
             "enforcedWeekDays": "enforced_week_days",
+            "traitIds": "traits",
         }
 
         for key, value in data.items():
@@ -123,6 +200,14 @@ class ParticipantSerializer(serializers.ModelSerializer):
                 # Convert None, empty string, or empty list to None
                 if value is None or value == "" or value == []:
                     snake_case_data[snake_key] = None
+                else:
+                    snake_case_data[snake_key] = value
+                continue
+
+            # Handle null/empty for M2M traits field
+            if snake_key == "traits":
+                if value is None or value == "" or value == []:
+                    snake_case_data[snake_key] = []
                 else:
                     snake_case_data[snake_key] = value
                 continue
@@ -241,6 +326,9 @@ class ParticipantSerializer(serializers.ModelSerializer):
                 result[camel_key] = value
             elif key == "enforced_week_days":
                 camel_key = "enforcedWeekDays"
+                result[camel_key] = value
+            elif key == "traits":
+                camel_key = "traitIds"
                 result[camel_key] = value
             else:
                 camel_key = camelize(key)
