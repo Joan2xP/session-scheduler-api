@@ -97,7 +97,11 @@ class ExhibitorSerializer(serializers.ModelSerializer):
             parts = s.split("_")
             return parts[0] + "".join(word.capitalize() for word in parts[1:])
 
-        return {camelize(key): value for key, value in data.items()}
+        result = {camelize(key): value for key, value in data.items()}
+        # Rename sessionGroup -> sessionGroupId
+        if "sessionGroup" in result:
+            result["sessionGroupId"] = result.pop("sessionGroup")
+        return result
 
 
 class ParticipantSerializer(serializers.ModelSerializer):
