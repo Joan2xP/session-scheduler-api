@@ -20,7 +20,7 @@ router.register(r"traits", ParticipantTraitViewSet, basename="trait")
 urlpatterns = [
     # Exhibitor routes
     path("", ExhibitorList.as_view(), name="exhibitor-list"),
-    path("<int:year>/<int:month>/", ExhibitorDetail.as_view(), name="exhibitor-detail"),
+    path("<int:year>/<int:month>/<int:session_group_id>/", ExhibitorDetail.as_view(), name="exhibitor-detail"),
     path("generate", generateScheduleData, name="generate-schedule-data"),
     # Session routes
     path(

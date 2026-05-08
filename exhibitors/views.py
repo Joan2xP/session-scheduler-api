@@ -28,29 +28,33 @@ class ExhibitorList(APIView):
 
 
 class ExhibitorDetail(APIView):
-    """Retrieve, create, or update an exhibitor by year and month"""
+    """Retrieve, create, or update an exhibitor by year, month, and session group"""
 
-    def get(self, request, year, month):
+    def get(self, request, year, month, session_group_id):
         try:
-            exhibitor = Exhibitor.objects.get(year=year, month=month)
+            exhibitor = Exhibitor.objects.get(
+                year=year, month=month, session_group_id=session_group_id
+            )
             serializer = ExhibitorSerializer(exhibitor)
             return Response(serializer.data)
         except Exhibitor.DoesNotExist:
             return Response(
-                {"error": f"Exhibitor not found for year {year}, month {month}"},
+                {"error": f"Exhibitor not found for year {year}, month {month}, session group {session_group_id}"},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-    def post(self, request, year, month):
+    def post(self, request, year, month, session_group_id):
         """Create a new exhibitor schedule"""
         schedule_data = request.data.get("scheduleData")
         schedule_statistics = request.data.get("statistics")
         days_with_details = request.data.get("daysWithDetails")
 
-        exhibitor, created = Exhibitor.objects.get_or_create(year=year, month=month)
+        exhibitor, created = Exhibitor.objects.get_or_create(
+            year=year, month=month, session_group_id=session_group_id
+        )
         if not created:
             return Response(
-                {"error": "Schedule already exists for this month"},
+                {"error": "Schedule already exists for this month and session group"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -62,13 +66,15 @@ class ExhibitorDetail(APIView):
         serializer = ExhibitorSerializer(exhibitor)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-    def put(self, request, year, month):
+    def put(self, request, year, month, session_group_id):
         """Update an existing exhibitor schedule"""
         try:
-            exhibitor = Exhibitor.objects.get(year=year, month=month)
+            exhibitor = Exhibitor.objects.get(
+                year=year, month=month, session_group_id=session_group_id
+            )
         except Exhibitor.DoesNotExist:
             return Response(
-                {"error": f"Exhibitor not found for year {year}, month {month}"},
+                {"error": f"Exhibitor not found for year {year}, month {month}, session group {session_group_id}"},
                 status=status.HTTP_404_NOT_FOUND,
             )
 

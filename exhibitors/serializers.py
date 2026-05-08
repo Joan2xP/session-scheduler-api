@@ -74,15 +74,20 @@ class ParticipantTraitSerializer(serializers.ModelSerializer):
 
 
 class ExhibitorSerializer(serializers.ModelSerializer):
+    session_group = serializers.PrimaryKeyRelatedField(
+        queryset=SessionGroup.objects.all(), required=False
+    )
+
     class Meta:
         model = Exhibitor
         fields = [
             "year",
             "month",
+            "session_group",
             "schedule_data",
             "schedule_statistics",
             "days_with_details",
-        ]  # Include all fields in the model
+        ]
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

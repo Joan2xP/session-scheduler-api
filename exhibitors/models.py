@@ -7,6 +7,9 @@ from django.core.exceptions import ValidationError
 class Exhibitor(models.Model):
     year = models.IntegerField()
     month = models.IntegerField()
+    session_group = models.ForeignKey(
+        "SessionGroup", on_delete=models.CASCADE, related_name="exhibitors", null=True, blank=True
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     day_details = models.JSONField(default=list)
@@ -14,8 +17,11 @@ class Exhibitor(models.Model):
     schedule_statistics = models.JSONField(default=list)
     days_with_details = models.JSONField(default=list)
 
+    class Meta:
+        unique_together = ("year", "month", "session_group")
+
     def __str__(self):
-        return self.name
+        return f"{self.year}-{self.month:02d} ({self.session_group})"
 
 
 class Participant(models.Model):
