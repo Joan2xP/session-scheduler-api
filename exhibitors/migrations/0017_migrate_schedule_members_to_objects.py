@@ -18,7 +18,8 @@ def migrate_members_to_objects(apps, schema_editor):
 
         changed = False
         for week in schedule_data:
-            for session in week.get("sessions", []):
+            sessions = week.get("sessions") or week.get("days") or []
+            for session in sessions:
                 members = session.get("members", [])
                 if not members:
                     continue
@@ -52,7 +53,8 @@ def reverse_migrate(apps, schema_editor):
 
         changed = False
         for week in schedule_data:
-            for session in week.get("sessions", []):
+            sessions = week.get("sessions") or week.get("days") or []
+            for session in sessions:
                 members = session.get("members", [])
                 if not members:
                     continue
