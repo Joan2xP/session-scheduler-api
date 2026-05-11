@@ -1,6 +1,31 @@
 from django.db import models
 from django.core.exceptions import ValidationError
 
+DEFAULT_SCHEDULER_CONFIG = {
+    "constraints": {
+        "availability": True,
+        "max_weekly": True,
+        "max_monthly": True,
+        "group_size": True,
+        "partner": True,
+        "minimum_monthly": True,
+        "exclusion": True,
+        "only_session_occurrences": True,
+        "exclude_session_occurrences": True,
+        "min_sessions_together": True,
+        "enforced_sessions": True,
+        "one_session_per_day": True,
+    },
+    "objectives": {
+        "diversity": {"enabled": True, "weight": 6},
+        "session_separation": {"enabled": True, "weight": 3},
+        "consecutive_days_penalty": {"enabled": True, "weight": 8},
+    },
+    "weekday_group_size": 4,
+    "weekend_group_size": 3,
+}
+
+
 # Create your models here.
 
 
@@ -240,8 +265,32 @@ class Participant(models.Model):
 
 class SessionGroup(models.Model):
     name = models.CharField(max_length=255)
+    scheduler_config = models.JSONField(
+        default=dict, blank=True
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    def get_scheduler_config(self):
+        """Return scheduler config with defaults applied for missing keys."""
+        config = DEFAULT_SCHEDULER_CONFIG.copy()
+        if self.scheduler_config:
+            # Merge constraints
+            if "constraints" in self.scheduler_config:
+                config["constraints"].update(self.scheduler_config["constraints"])
+            # Merge objectives
+            if "objectives" in self.scheduler_config:
+                for key, val in self.scheduler_config["objectives"].items():
+                    if key in config["objectives"]:
+                        config["objectives"][key].update(val)
+                    else:
+                        config["objectives"][key] = val
+            # Merge group sizes
+            if "weekdayGroupSize" in self.scheduler_config:
+                config["weekdayGroupSize"] = self.scheduler_config["weekdayGroupSize"]
+            if "weekendGroupSize" in self.scheduler_config:
+                config["weekendGroupSize"] = self.scheduler_config["weekendGroupSize"]
+        return config
 
     def __str__(self):
         return self.name

@@ -473,18 +473,61 @@ class SessionGroupSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SessionGroup
-        fields = ["id", "name", "sessions"]
+        fields = ["id", "name", "sessions", "scheduler_config"]
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        # Data is already in camelCase from nested SessionSerializer
+        # Always return full config with defaults applied
+        full_config = instance.get_scheduler_config()
+        data.pop("scheduler_config", None)
+        data["schedulerConfig"] = self._camelize_config(full_config)
         return data
+
+    def _camelize_config(self, config):
+        """Convert snake_case keys in scheduler_config to camelCase."""
+        def camelize(s):
+            parts = s.split("_")
+            return parts[0] + "".join(word.capitalize() for word in parts[1:])
+
+        result = {}
+        for key, value in config.items():
+            camel_key = camelize(key) if "_" in key else key
+            if isinstance(value, dict):
+                result[camel_key] = {
+                    camelize(k) if "_" in k else k: v for k, v in value.items()
+                }
+            else:
+                result[camel_key] = value
+        return result
+
+    def _snakeify_config(self, config):
+        """Convert camelCase keys in scheduler_config to snake_case."""
+        from django.utils.text import camel_case_to_spaces
+
+        def snake(s):
+            return camel_case_to_spaces(s).replace(" ", "_")
+
+        result = {}
+        for key, value in config.items():
+            snake_key = snake(key) if any(c.isupper() for c in key) else key
+            if isinstance(value, dict):
+                result[snake_key] = {
+                    snake(k) if any(c.isupper() for c in k) else k: v
+                    for k, v in value.items()
+                }
+            else:
+                result[snake_key] = value
+        return result
 
     def to_internal_value(self, data):
         """Handle nested sessions if provided"""
         # Create a copy to avoid mutating the original data
         data_copy = data.copy() if hasattr(data, "copy") else dict(data)
         sessions_data = data_copy.pop("sessions", None)
+        # Convert schedulerConfig camelCase keys to snake_case
+        scheduler_config = data_copy.pop("schedulerConfig", None)
         validated_data = super().to_internal_value(data_copy)
         validated_data["sessions_data"] = sessions_data
+        if scheduler_config is not None:
+            validated_data["scheduler_config"] = self._snakeify_config(scheduler_config)
         return validated_data

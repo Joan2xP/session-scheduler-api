@@ -7,7 +7,13 @@ from jinja2 import Template
 import imgkit
 import argparse
 from django.db.models import Case, When, Value, IntegerField
-from exhibitors.models import Participant, Session, SessionGroup, ParticipantTrait
+from exhibitors.models import (
+    Participant,
+    Session,
+    SessionGroup,
+    ParticipantTrait,
+    DEFAULT_SCHEDULER_CONFIG,
+)
 import random
 
 
@@ -17,14 +23,43 @@ class SessionScheduler:
         start_date,
         session_group_id,
         exclude_session_occurrences=None,
-        weekday_group_size=4,
-        weekend_group_size=3,
+        scheduler_config=None,
+        weekday_group_size=None,
+        weekend_group_size=None,
     ):
         self.start_date = start_date
         self.session_group_id = session_group_id
         self.exclude_session_occurrences = exclude_session_occurrences or []
-        self.weekday_group_size = weekday_group_size
-        self.weekend_group_size = weekend_group_size
+
+        # Merge scheduler config with defaults
+        self.scheduler_config = DEFAULT_SCHEDULER_CONFIG.copy()
+        if scheduler_config:
+            if "constraints" in scheduler_config:
+                self.scheduler_config["constraints"].update(
+                    scheduler_config["constraints"]
+                )
+            if "objectives" in scheduler_config:
+                for key, val in scheduler_config["objectives"].items():
+                    if key in self.scheduler_config["objectives"]:
+                        self.scheduler_config["objectives"][key].update(val)
+                    else:
+                        self.scheduler_config["objectives"][key] = val
+            if "weekday_group_size" in scheduler_config:
+                self.scheduler_config["weekday_group_size"] = scheduler_config[
+                    "weekday_group_size"
+                ]
+            if "weekend_group_size" in scheduler_config:
+                self.scheduler_config["weekend_group_size"] = scheduler_config[
+                    "weekend_group_size"
+                ]
+
+        # Group sizes: explicit params override config
+        self.weekday_group_size = (
+            weekday_group_size or self.scheduler_config["weekday_group_size"]
+        )
+        self.weekend_group_size = (
+            weekend_group_size or self.scheduler_config["weekend_group_size"]
+        )
 
         self.data = []
         self.people = []  # List of participant IDs
@@ -298,7 +333,11 @@ class SessionScheduler:
 
                 # Get all occurrences of this session, sorted by date
                 session_occurrences = sorted(
-                    [(sid, d) for sid, d in self.all_available_sessions if sid == session_id],
+                    [
+                        (sid, d)
+                        for sid, d in self.all_available_sessions
+                        if sid == session_id
+                    ],
                     key=lambda x: x[1],
                 )
 
@@ -320,10 +359,21 @@ class SessionScheduler:
                             resolved.append(session_occurrences[idx])
 
                 if resolved:
-                    if participant_id not in self.exclude_session_occurrences_per_participant:
-                        self.exclude_session_occurrences_per_participant[participant_id] = []
-                    existing = self.exclude_session_occurrences_per_participant[participant_id]
-                    existing_set = {(e.get("sessionId"), e.get("date")) for e in existing if isinstance(e, dict)}
+                    if (
+                        participant_id
+                        not in self.exclude_session_occurrences_per_participant
+                    ):
+                        self.exclude_session_occurrences_per_participant[
+                            participant_id
+                        ] = []
+                    existing = self.exclude_session_occurrences_per_participant[
+                        participant_id
+                    ]
+                    existing_set = {
+                        (e.get("sessionId"), e.get("date"))
+                        for e in existing
+                        if isinstance(e, dict)
+                    }
                     for sid, date_str in resolved:
                         if (sid, date_str) not in existing_set:
                             existing.append({"sessionId": sid, "date": date_str})
@@ -564,6 +614,7 @@ class SessionScheduler:
         """
         A more lightweight diversity objective that encourages diverse pairings
         by minimizing repeated appearances of the same pairs.
+        Returns the max_appearances variable for combined objective.
         """
         # Track pair occurrences
         pair_counts = {}
@@ -616,11 +667,13 @@ class SessionScheduler:
             # Constrain max_appearances to be >= each pair's count
             self.model.Add(max_appearances >= pair_total)
 
-        # Minimize the maximum number of times any pair appears together
-        self.model.Minimize(max_appearances)
+        return max_appearances
 
     def add_session_separation_objective(self):
-        """Add an objective to maximize the minimum separation between sessions for each participant."""
+        """
+        Add an objective to maximize the minimum separation between sessions for each participant.
+        Returns the sum of min_gap variables for combined objective.
+        """
         min_gap_vars = []
         start_date = datetime.strptime(self.start_date, "%Y-%m-%d")
 
@@ -661,9 +714,92 @@ class SessionScheduler:
             if gap_vars:
                 self.model.AddMinEquality(min_gap, gap_vars)
 
-        # Maximize the minimum gap across all participants
-        if min_gap_vars:
-            self.model.Maximize(sum(min_gap_vars))
+        return sum(min_gap_vars) if min_gap_vars else None
+
+    def add_consecutive_days_penalty_objective(self):
+        """
+        Add an objective to penalize participants attending sessions on consecutive days.
+        Returns the total consecutive days count for combined objective.
+        """
+        start_date = datetime.strptime(self.start_date, "%Y-%m-%d")
+        consecutive_day_vars = []
+
+        # Group sessions by date
+        sessions_by_date = {}
+        for session_id, date in self.available_sessions:
+            if date not in sessions_by_date:
+                sessions_by_date[date] = []
+            sessions_by_date[date].append(session_id)
+
+        # Get sorted unique dates
+        sorted_dates = sorted(sessions_by_date.keys())
+
+        for participant_id in self.people:
+            # Create attendance indicators per day (1 if attending any session that day)
+            day_attendance = {}
+            for date in sorted_dates:
+                day_var = self.model.NewBoolVar(f"day_attend_p{participant_id}_{date}")
+                session_vars = [
+                    self.attendance[participant_id][(session_id, date)]
+                    for session_id in sessions_by_date[date]
+                ]
+                # day_var = 1 if attending any session on this day
+                self.model.AddMaxEquality(day_var, session_vars)
+                day_attendance[date] = day_var
+
+            # Check consecutive day pairs
+            for i in range(len(sorted_dates) - 1):
+                date1 = sorted_dates[i]
+                date2 = sorted_dates[i + 1]
+
+                # Check if dates are consecutive
+                d1 = datetime.strptime(date1, "%Y-%m-%d")
+                d2 = datetime.strptime(date2, "%Y-%m-%d")
+                if (d2 - d1).days == 1:
+                    # Create indicator: 1 if attending both consecutive days
+                    consecutive_var = self.model.NewBoolVar(
+                        f"consecutive_p{participant_id}_{date1}_{date2}"
+                    )
+                    self.model.AddBoolAnd(
+                        [day_attendance[date1], day_attendance[date2]]
+                    ).OnlyEnforceIf(consecutive_var)
+                    self.model.AddBoolOr(
+                        [day_attendance[date1].Not(), day_attendance[date2].Not()]
+                    ).OnlyEnforceIf(consecutive_var.Not())
+                    consecutive_day_vars.append(consecutive_var)
+
+        return sum(consecutive_day_vars) if consecutive_day_vars else None
+
+    def set_combined_objective(self, diversity_var, separation_var, consecutive_var):
+        """
+        Set a single combined objective with weights for all three objectives.
+        Weights are read from scheduler_config.
+        """
+        objectives_config = self.scheduler_config["objectives"]
+
+        objective_terms = []
+
+        if diversity_var is not None and objectives_config["diversity"]["enabled"]:
+            weight = objectives_config["diversity"]["weight"]
+            objective_terms.append(weight * diversity_var)
+
+        if (
+            separation_var is not None
+            and objectives_config["session_separation"]["enabled"]
+        ):
+            weight = objectives_config["session_separation"]["weight"]
+            # Negative because we want to maximize separation
+            objective_terms.append(-weight * separation_var)
+
+        if (
+            consecutive_var is not None
+            and objectives_config["consecutive_days_penalty"]["enabled"]
+        ):
+            weight = objectives_config["consecutive_days_penalty"]["weight"]
+            objective_terms.append(weight * consecutive_var)
+
+        if objective_terms:
+            self.model.Minimize(sum(objective_terms))
 
     def add_min_sessions_together_constraints(self):
         """Ensure participants are scheduled together for at least the specified number of sessions."""
@@ -812,9 +948,7 @@ class SessionScheduler:
                         name = self.participant_names.get(
                             participant_id, str(participant_id)
                         )
-                        members.append(
-                            {"name": name, "participantId": participant_id}
-                        )
+                        members.append({"name": name, "participantId": participant_id})
 
                 # Add to schedule data
                 schedule_data.append(
@@ -965,26 +1099,42 @@ class SessionScheduler:
 
     def solve_group_scheduling(self):
         """Solve the scheduling problem."""
+        constraints = self.scheduler_config["constraints"]
+        print(f"Applying constraints based on configuration: {constraints}")
 
-        # Add constraints
-        self.availability_constraints()
-        self.add_weekly_constraints()
-        self.add_monthly_constraints()
-        self.add_group_size_constraints()
-        self.add_partner_constraints()
+        # Add constraints based on config
+        if constraints["availability"]:
+            self.availability_constraints()
+        if constraints["max_weekly"]:
+            self.add_weekly_constraints()
+        if constraints["max_monthly"]:
+            self.add_monthly_constraints()
+        if constraints["group_size"]:
+            self.add_group_size_constraints()
+        if constraints["partner"]:
+            self.add_partner_constraints()
+        if constraints["minimum_monthly"]:
+            self.add_minimum_monthly_constraints()
+        if constraints["exclusion"]:
+            self.add_exclusion_constraints()
+        if constraints["only_session_occurrences"]:
+            self.add_only_session_occurrences_constraints()
+        if constraints["exclude_session_occurrences"]:
+            self.add_exclude_session_occurrences_constraints()
+        if constraints["min_sessions_together"]:
+            self.add_min_sessions_together_constraints()
+        if constraints["enforced_sessions"]:
+            self.add_enforced_sessions_constraints()
+        if constraints["one_session_per_day"]:
+            self.add_one_session_per_day_constraints()
 
-        self.add_minimum_monthly_constraints()
+        # Build objective components
+        diversity_var = self.add_diversity_objective()
+        separation_var = self.add_session_separation_objective()
+        consecutive_var = self.add_consecutive_days_penalty_objective()
 
-        self.add_exclusion_constraints()
-        self.add_only_session_occurrences_constraints()
-        self.add_exclude_session_occurrences_constraints()
-        self.add_min_sessions_together_constraints()
-        self.add_enforced_sessions_constraints()
-        self.add_one_session_per_day_constraints()
-
-        # Set the objective
-        self.add_diversity_objective()
-        self.add_session_separation_objective()
+        # Set combined weighted objective
+        self.set_combined_objective(diversity_var, separation_var, consecutive_var)
 
         # Solve the model
         solver = self.initialize_solver()

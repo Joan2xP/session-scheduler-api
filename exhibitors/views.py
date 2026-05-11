@@ -133,12 +133,16 @@ def generateScheduleData(request):
 
     try:
         start_date = f"{year}-{month:02d}-01"
+
+        # Get session group with scheduler config
+        session_group = SessionGroup.objects.get(id=session_group_id)
+        scheduler_config = session_group.get_scheduler_config()
+
         schedule_generator = SessionScheduler(
             start_date=start_date,
             session_group_id=session_group_id,
             exclude_session_occurrences=exclude_session_occurrences,
-            weekday_group_size=4,
-            weekend_group_size=3,
+            scheduler_config=scheduler_config,
         )
 
         res = schedule_generator.solve_group_scheduling()
