@@ -723,6 +723,25 @@ class SessionScheduler:
                             self.attendance[participant_id][(session_id, date)] == 1
                         )
 
+    def add_one_session_per_day_constraints(self):
+        """Ensure participants attend at most one session per day."""
+        # Group sessions by date
+        sessions_by_date = {}
+        for session_id, date in self.available_sessions:
+            if date not in sessions_by_date:
+                sessions_by_date[date] = []
+            sessions_by_date[date].append(session_id)
+
+        # For each participant and each date, add constraint that sum <= 1
+        for participant_id in self.people:
+            for date, session_ids in sessions_by_date.items():
+                if len(session_ids) > 1:
+                    day_vars = [
+                        self.attendance[participant_id][(session_id, date)]
+                        for session_id in session_ids
+                    ]
+                    self.model.Add(sum(day_vars) <= 1)
+
     def initialize_solver(self):
         """Initialize the solver and set parameters."""
         solver = cp_model.CpSolver()
@@ -961,6 +980,7 @@ class SessionScheduler:
         self.add_exclude_session_occurrences_constraints()
         self.add_min_sessions_together_constraints()
         self.add_enforced_sessions_constraints()
+        self.add_one_session_per_day_constraints()
 
         # Set the objective
         self.add_diversity_objective()
