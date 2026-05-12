@@ -22,7 +22,7 @@ class ExhibitorList(APIView):
     """List all exhibitors"""
 
     def get(self, request):
-        exhibitors = Exhibitor.objects.all()
+        exhibitors = Exhibitor.objects.filter(session_group__user=request.user)
         serializer = ExhibitorSerializer(exhibitors, many=True)
         return Response(serializer.data)
 
@@ -33,7 +33,8 @@ class ExhibitorDetail(APIView):
     def get(self, request, year, month, session_group_id):
         try:
             exhibitor = Exhibitor.objects.get(
-                year=year, month=month, session_group_id=session_group_id
+                year=year, month=month, session_group_id=session_group_id,
+                session_group__user=request.user
             )
             serializer = ExhibitorSerializer(exhibitor)
             return Response(serializer.data)
@@ -45,12 +46,21 @@ class ExhibitorDetail(APIView):
 
     def post(self, request, year, month, session_group_id):
         """Create a new exhibitor schedule"""
+        # Validate session group belongs to user
+        try:
+            session_group = SessionGroup.objects.get(id=session_group_id, user=request.user)
+        except SessionGroup.DoesNotExist:
+            return Response(
+                {"error": "Session group not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
         schedule_data = request.data.get("scheduleData")
         schedule_statistics = request.data.get("statistics")
         days_with_details = request.data.get("daysWithDetails")
 
         exhibitor, created = Exhibitor.objects.get_or_create(
-            year=year, month=month, session_group_id=session_group_id
+            year=year, month=month, session_group=session_group
         )
         if not created:
             return Response(
@@ -70,7 +80,8 @@ class ExhibitorDetail(APIView):
         """Update an existing exhibitor schedule"""
         try:
             exhibitor = Exhibitor.objects.get(
-                year=year, month=month, session_group_id=session_group_id
+                year=year, month=month, session_group_id=session_group_id,
+                session_group__user=request.user
             )
         except Exhibitor.DoesNotExist:
             return Response(
@@ -117,9 +128,9 @@ def generateScheduleData(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Validate session_group_id exists
+        # Validate session_group_id exists and belongs to user
         try:
-            SessionGroup.objects.get(id=session_group_id)
+            SessionGroup.objects.get(id=session_group_id, user=request.user)
         except SessionGroup.DoesNotExist:
             return Response(
                 {"error": f"SessionGroup with id {session_group_id} does not exist"},
@@ -135,7 +146,7 @@ def generateScheduleData(request):
         start_date = f"{year}-{month:02d}-01"
 
         # Get session group with scheduler config
-        session_group = SessionGroup.objects.get(id=session_group_id)
+        session_group = SessionGroup.objects.get(id=session_group_id, user=request.user)
         scheduler_config = session_group.get_scheduler_config()
 
         schedule_generator = SessionScheduler(
@@ -182,14 +193,13 @@ class ParticipantViewSet(viewsets.ModelViewSet):
     lookup_field = "id"
 
     def get_queryset(self):
-        """Filter participants by sessionGroupId query parameter if provided"""
-        queryset = Participant.objects.all()
+        """Filter participants by user and optional sessionGroupId"""
+        queryset = Participant.objects.filter(session_group__user=self.request.user)
         session_group_id = self.request.query_params.get("sessionGroupId")
         if session_group_id:
             try:
                 queryset = queryset.filter(session_group_id=int(session_group_id))
             except ValueError:
-                # Invalid sessionGroupId, return empty queryset
                 queryset = queryset.none()
         return queryset
 
@@ -197,6 +207,14 @@ class ParticipantViewSet(viewsets.ModelViewSet):
         """Create a new participant with validation"""
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+
+        # Validate session_group belongs to user
+        session_group = serializer.validated_data.get("session_group")
+        if session_group and session_group.user != request.user:
+            return Response(
+                {"sessionGroupId": "Session group not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         # Additional validation for same session group
         self._validate_same_session_group(serializer.validated_data, None)
@@ -401,7 +419,7 @@ class SessionGroupList(APIView):
     """List all session groups or create a new one"""
 
     def get(self, request):
-        groups = SessionGroup.objects.prefetch_related("sessions").all()
+        groups = SessionGroup.objects.prefetch_related("sessions").filter(user=request.user)
         serializer = SessionGroupSerializer(groups, many=True)
         return Response(serializer.data)
 
@@ -410,7 +428,7 @@ class SessionGroupList(APIView):
         serializer = SessionGroupSerializer(data=request.data)
         if serializer.is_valid():
             sessions_data = serializer.validated_data.pop("sessions_data", None)
-            group = SessionGroup.objects.create(**serializer.validated_data)
+            group = SessionGroup.objects.create(user=request.user, **serializer.validated_data)
 
             # Create nested sessions if provided
             if sessions_data:
@@ -439,14 +457,14 @@ class SessionGroupDetail(APIView):
 
     def get(self, request, group_id):
         group = get_object_or_404(
-            SessionGroup.objects.prefetch_related("sessions"), id=group_id
+            SessionGroup.objects.prefetch_related("sessions"), id=group_id, user=request.user
         )
         serializer = SessionGroupSerializer(group)
         return Response(serializer.data)
 
     def put(self, request, group_id):
         """Update a session group"""
-        group = get_object_or_404(SessionGroup, id=group_id)
+        group = get_object_or_404(SessionGroup, id=group_id, user=request.user)
         serializer = SessionGroupSerializer(group, data=request.data)
         if serializer.is_valid():
             sessions_data = serializer.validated_data.pop("sessions_data", None)
@@ -490,7 +508,7 @@ class SessionGroupDetail(APIView):
 
     def delete(self, request, group_id):
         """Delete a session group"""
-        group = get_object_or_404(SessionGroup, id=group_id)
+        group = get_object_or_404(SessionGroup, id=group_id, user=request.user)
         group.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -500,7 +518,7 @@ class SessionList(APIView):
 
     def post(self, request, group_id):
         """Create a new session"""
-        group = get_object_or_404(SessionGroup, id=group_id)
+        group = get_object_or_404(SessionGroup, id=group_id, user=request.user)
         serializer = SessionSerializer(data=request.data)
         if serializer.is_valid():
             session = serializer.save(session_group=group)
@@ -514,7 +532,7 @@ class SessionDetail(APIView):
 
     def put(self, request, group_id, session_id):
         """Update a session"""
-        group = get_object_or_404(SessionGroup, id=group_id)
+        group = get_object_or_404(SessionGroup, id=group_id, user=request.user)
         session = get_object_or_404(Session, id=session_id, session_group=group)
         serializer = SessionSerializer(session, data=request.data)
         if serializer.is_valid():
@@ -524,7 +542,7 @@ class SessionDetail(APIView):
 
     def delete(self, request, group_id, session_id):
         """Delete a session"""
-        group = get_object_or_404(SessionGroup, id=group_id)
+        group = get_object_or_404(SessionGroup, id=group_id, user=request.user)
         session = get_object_or_404(Session, id=session_id, session_group=group)
         session.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -541,8 +559,8 @@ class ParticipantTraitViewSet(viewsets.ModelViewSet):
     lookup_field = "id"
 
     def get_queryset(self):
-        """Filter traits by sessionGroupId query parameter if provided"""
-        queryset = ParticipantTrait.objects.all()
+        """Filter traits by user and optional sessionGroupId"""
+        queryset = ParticipantTrait.objects.filter(session_group__user=self.request.user)
         session_group_id = self.request.query_params.get("sessionGroupId")
         if session_group_id:
             try:
@@ -555,6 +573,14 @@ class ParticipantTraitViewSet(viewsets.ModelViewSet):
         """Create a new trait"""
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+
+        # Validate session_group belongs to user
+        session_group = serializer.validated_data.get("session_group")
+        if session_group and session_group.user != request.user:
+            return Response(
+                {"sessionGroupId": "Session group not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         participants = serializer.validated_data.pop("participants", [])
         self.perform_create(serializer)

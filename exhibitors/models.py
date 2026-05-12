@@ -1,4 +1,5 @@
 from django.db import models
+from django.conf import settings
 from django.core.exceptions import ValidationError
 
 DEFAULT_SCHEDULER_CONFIG = {
@@ -264,6 +265,11 @@ class Participant(models.Model):
 
 
 class SessionGroup(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="session_groups",
+    )
     name = models.CharField(max_length=255)
     scheduler_config = models.JSONField(
         default=dict, blank=True

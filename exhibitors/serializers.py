@@ -470,10 +470,11 @@ class SessionSerializer(serializers.ModelSerializer):
 
 class SessionGroupSerializer(serializers.ModelSerializer):
     sessions = SessionSerializer(many=True, read_only=True)
+    user = serializers.StringRelatedField(read_only=True)
 
     class Meta:
         model = SessionGroup
-        fields = ["id", "name", "sessions", "scheduler_config"]
+        fields = ["id", "name", "user", "sessions", "scheduler_config"]
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
