@@ -1,6 +1,8 @@
 from django.db import models
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.db.models.signals import pre_delete
+from django.dispatch import receiver
 
 DEFAULT_SCHEDULER_CONFIG = {
     "constraints": {
@@ -372,3 +374,56 @@ class ParticipantTrait(models.Model):
 
     def __str__(self):
         return self.name
+
+
+@receiver(pre_delete, sender=Session)
+def cleanup_participant_session_refs(sender, instance, **kwargs):
+    """Remove deleted session ID from participant JSON fields."""
+    session_id = instance.id
+    participants = Participant.objects.filter(session_group=instance.session_group)
+
+    for p in participants:
+        changed = False
+
+        # availability: array of session IDs
+        if p.availability and session_id in p.availability:
+            p.availability = [sid for sid in p.availability if sid != session_id]
+            if not p.availability:
+                p.availability = None
+            changed = True
+
+        # only_session_occurrences: array of {sessionId, date}
+        if p.only_session_occurrences:
+            filtered = [o for o in p.only_session_occurrences if o.get("sessionId") != session_id]
+            if len(filtered) != len(p.only_session_occurrences):
+                p.only_session_occurrences = filtered or None
+                changed = True
+
+        # exclude_session_occurrences: array of {sessionId, date}
+        if p.exclude_session_occurrences:
+            filtered = [o for o in p.exclude_session_occurrences if o.get("sessionId") != session_id]
+            if len(filtered) != len(p.exclude_session_occurrences):
+                p.exclude_session_occurrences = filtered or None
+                changed = True
+
+        # min_sessions_together: object {sessionId, partnerId, amount}
+        if p.min_sessions_together and p.min_sessions_together.get("sessionId") == session_id:
+            p.min_sessions_together = None
+            changed = True
+
+        # enforced_week_days: array of session IDs
+        if p.enforced_week_days and session_id in p.enforced_week_days:
+            p.enforced_week_days = [sid for sid in p.enforced_week_days if sid != session_id]
+            if not p.enforced_week_days:
+                p.enforced_week_days = None
+            changed = True
+
+        if changed:
+            # Use update() to skip full_clean validation on delete cleanup
+            Participant.objects.filter(id=p.id).update(
+                availability=p.availability,
+                only_session_occurrences=p.only_session_occurrences,
+                exclude_session_occurrences=p.exclude_session_occurrences,
+                min_sessions_together=p.min_sessions_together,
+                enforced_week_days=p.enforced_week_days,
+            )
