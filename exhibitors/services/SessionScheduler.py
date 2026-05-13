@@ -881,7 +881,7 @@ class SessionScheduler:
     def initialize_solver(self):
         """Initialize the solver and set parameters."""
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = 300  # 5 minutes time limit
+        solver.parameters.max_time_in_seconds = 165  # 2 min 45 sec time limit
         # solver.parameters.log_search_progress = True  # Enable detailed logging
         return solver
 
