@@ -2,5 +2,6 @@ venv
 */__pycache__
 */*/__pycache__
 db.sqlite3*
+data.json
 exhibitors/assets/people_availability.xlsx
 import_participants.py

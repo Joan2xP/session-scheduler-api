@@ -6,8 +6,12 @@ import django.db.models.deletion
 
 def assign_existing_to_superuser(apps, schema_editor):
     SessionGroup = apps.get_model("exhibitors", "SessionGroup")
-    # Assign all existing session groups to the first superuser (id=1)
-    SessionGroup.objects.update(user_id=1)
+    User = apps.get_model("auth", "User")
+    # Only assign if there are session groups without a user and a superuser exists
+    if SessionGroup.objects.filter(user__isnull=True).exists():
+        superuser = User.objects.filter(is_superuser=True).first()
+        if superuser:
+            SessionGroup.objects.filter(user__isnull=True).update(user_id=superuser.id)
 
 
 class Migration(migrations.Migration):
@@ -29,16 +33,6 @@ class Migration(migrations.Migration):
                 to="auth.user",
             ),
         ),
-        # Step 2: Populate existing rows
+        # Step 2: Populate existing rows (safe for empty DB)
         migrations.RunPython(assign_existing_to_superuser, migrations.RunPython.noop),
-        # Step 3: Make non-nullable
-        migrations.AlterField(
-            model_name="sessiongroup",
-            name="user",
-            field=models.ForeignKey(
-                on_delete=django.db.models.deletion.CASCADE,
-                related_name="session_groups",
-                to="auth.user",
-            ),
-        ),
     ]
