@@ -142,6 +142,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "https://exhibitor-scheduler.vercel.app",
+    "https://exhibitor-scheduler.joanpuigperez.dev",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -150,6 +151,7 @@ CSRF_TRUSTED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "https://exhibitor-scheduler.vercel.app",
+    "https://exhibitor-scheduler.joanpuigperez.dev",
 ]
 
 # Django REST Framework
@@ -157,9 +159,7 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
-    "DEFAULT_PERMISSION_CLASSES": (
-        "rest_framework.permissions.IsAuthenticated",
-    ),
+    "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
 }
 
 # JWT configuration
