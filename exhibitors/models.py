@@ -23,6 +23,7 @@ DEFAULT_SCHEDULER_CONFIG = {
         "diversity": {"enabled": True, "weight": 6},
         "session_separation": {"enabled": True, "weight": 3},
         "consecutive_days_penalty": {"enabled": True, "weight": 8},
+        "anchor": {"enabled": True, "weight": 7},
     },
     "weekday_group_size": 4,
     "weekend_group_size": 3,
@@ -83,6 +84,7 @@ class Participant(models.Model):
         default=None, null=True, blank=True
     )  # Single object {sessionId, partnerId, amount}
     enforced_week_days = models.JSONField(default=None, null=True, blank=True)
+    is_anchor = models.BooleanField(default=False)
     traits = models.ManyToManyField(
         "ParticipantTrait", blank=True, related_name="participants"
     )
@@ -271,6 +273,8 @@ class SessionGroup(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="session_groups",
+        null=True,
+        blank=True,
     )
     name = models.CharField(max_length=255)
     scheduler_config = models.JSONField(

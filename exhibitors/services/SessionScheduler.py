@@ -90,6 +90,7 @@ class SessionScheduler:
         )  # participant_id -> {sessionId, partnerId, amount}
         self.enforced_sessions = {}  # participant_id -> list of session IDs
         self.traits = {}  # participant_id -> list of ParticipantTrait objects
+        self.anchor_participants = set()  # set of participant IDs with is_anchor=True
 
         # Available sessions as (session_id, date) tuples
         self.available_sessions = []
@@ -129,6 +130,7 @@ class SessionScheduler:
                 "min_sessions_together": p.min_sessions_together,  # {sessionId, partnerId, amount} or None
                 "enforced_sessions": p.enforced_week_days
                 or [],  # Array of session IDs (from enforced_week_days field)
+                "is_anchor": p.is_anchor,
                 "traits": list(p.traits.all()),  # List of ParticipantTrait objects
             }
             self.rows.append(row)
@@ -312,6 +314,10 @@ class SessionScheduler:
             traits = row.get("traits", [])
             if traits:
                 self.traits[participant_id] = traits
+
+            # Store anchor participants
+            if row.get("is_anchor", False):
+                self.anchor_participants.add(participant_id)
 
         # Initialize attendance variables with (session_id, date) keys
         for participant_id in self.people:
@@ -610,6 +616,49 @@ class SessionScheduler:
                             <= 1
                         )
 
+    def add_anchor_objective(self):
+        """
+        Encourage at least one anchor participant per session occurrence.
+        Returns the count of sessions without an anchor (to minimize).
+        Having more than one anchor in a session provides no extra benefit.
+        """
+        if not self.anchor_participants:
+            return None
+
+        not_covered_vars = []
+
+        for session_id, date in self.available_sessions:
+            # covered_s = 1 if at least one anchor attends this session
+            covered_s = self.model.NewBoolVar(
+                f"anchor_covered_s{session_id}_{date}"
+            )
+
+            # Sum of anchor attendances for this session occurrence
+            anchor_attendance = [
+                self.attendance[pid][(session_id, date)]
+                for pid in self.anchor_participants
+                if pid in self.attendance
+            ]
+
+            if not anchor_attendance:
+                continue
+
+            # covered_s = 1 iff sum >= 1 (at least one anchor attends)
+            self.model.Add(sum(anchor_attendance) >= 1).OnlyEnforceIf(covered_s)
+            self.model.Add(sum(anchor_attendance) == 0).OnlyEnforceIf(covered_s.Not())
+
+            # not_covered = 1 - covered_s (we want to minimize this)
+            not_covered = self.model.NewBoolVar(
+                f"anchor_not_covered_s{session_id}_{date}"
+            )
+            self.model.Add(not_covered == 1 - covered_s)
+            not_covered_vars.append(not_covered)
+
+        if not not_covered_vars:
+            return None
+
+        return sum(not_covered_vars)
+
     def add_diversity_objective(self):
         """
         A more lightweight diversity objective that encourages diverse pairings
@@ -770,9 +819,11 @@ class SessionScheduler:
 
         return sum(consecutive_day_vars) if consecutive_day_vars else None
 
-    def set_combined_objective(self, diversity_var, separation_var, consecutive_var):
+    def set_combined_objective(
+        self, diversity_var, separation_var, consecutive_var, anchor_var=None
+    ):
         """
-        Set a single combined objective with weights for all three objectives.
+        Set a single combined objective with weights for all objectives.
         Weights are read from scheduler_config.
         """
         objectives_config = self.scheduler_config["objectives"]
@@ -797,6 +848,10 @@ class SessionScheduler:
         ):
             weight = objectives_config["consecutive_days_penalty"]["weight"]
             objective_terms.append(weight * consecutive_var)
+
+        if anchor_var is not None and objectives_config["anchor"]["enabled"]:
+            weight = objectives_config["anchor"]["weight"]
+            objective_terms.append(weight * anchor_var)
 
         if objective_terms:
             self.model.Minimize(sum(objective_terms))
@@ -1132,9 +1187,12 @@ class SessionScheduler:
         diversity_var = self.add_diversity_objective()
         separation_var = self.add_session_separation_objective()
         consecutive_var = self.add_consecutive_days_penalty_objective()
+        anchor_var = self.add_anchor_objective()
 
         # Set combined weighted objective
-        self.set_combined_objective(diversity_var, separation_var, consecutive_var)
+        self.set_combined_objective(
+            diversity_var, separation_var, consecutive_var, anchor_var
+        )
 
         # Solve the model
         solver = self.initialize_solver()
