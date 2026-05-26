@@ -32,7 +32,7 @@ APPEND_SLASH = False
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get("DEBUG", "False").lower() == "true"
 
-ALLOWED_HOSTS = ["127.0.0.1", "localhost", "exhibitor-scheduler-api.joanpuigperez.dev"]
+ALLOWED_HOSTS = ["127.0.0.1", "localhost", "session-scheduler-api.joanpuigperez.dev"]
 
 
 # Application definition
