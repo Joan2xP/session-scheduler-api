@@ -142,7 +142,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "https://exhibitor-scheduler.vercel.app",
-    "https://exhibitor-scheduler.joanpuigperez.dev",
+    "https://session-scheduler.joanpuigperez.dev",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -151,7 +151,7 @@ CSRF_TRUSTED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "https://exhibitor-scheduler.vercel.app",
-    "https://exhibitor-scheduler.joanpuigperez.dev",
+    "https://session-scheduler.joanpuigperez.dev",
 ]
 
 # Django REST Framework
