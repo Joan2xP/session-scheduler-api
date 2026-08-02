@@ -2,6 +2,8 @@ import json
 import logging
 from datetime import datetime
 
+from django.core.cache import cache
+
 from exhibitors.services import (
     SchedulerService,
     ParticipantService,
@@ -12,8 +14,42 @@ from .provider import ToolDefinition
 
 logger = logging.getLogger(__name__)
 
+SCHEDULE_CACHE_TTL = 3600
 
-def _serialize_participant(p):
+
+def _schedule_cache_key(user_id, session_group_id, year, month):
+    return f"ai:sched:{user_id}:{session_group_id}:{year}:{month}"
+
+
+def _serialize_participant(p, fields=None):
+    data = {
+        "id": p.id,
+        "name": p.name,
+        "sessionGroupId": p.session_group_id,
+        "isAnchor": p.is_anchor,
+    }
+    if fields:
+        field_set = set(fields)
+        extras = {
+            "maxPerWeek": p.max_per_week,
+            "maxPerMonth": p.max_per_month,
+            "minPerMonth": p.min_per_month,
+            "partnerId": p.partner_id,
+            "availability": p.availability,
+            "excludeIds": p.exclude_ids,
+            "onlySessionOccurrences": p.only_session_occurrences,
+            "excludeSessionOccurrences": p.exclude_session_occurrences,
+            "minSessionsTogether": p.min_sessions_together,
+            "enforcedWeekDays": p.enforced_week_days,
+            "traitIds": [t.id for t in p.traits.all()],
+        }
+        for key in field_set:
+            if key in extras:
+                data[key] = extras[key]
+    return data
+
+
+def _serialize_participant_full(p):
     return {
         "id": p.id,
         "name": p.name,
@@ -33,7 +69,36 @@ def _serialize_participant(p):
     }
 
 
-def _serialize_session_group(g):
+def _serialize_session_group(g, fields=None):
+    data = {
+        "id": g.id,
+        "name": g.name,
+        "sessionCount": g.sessions.count(),
+    }
+    if fields:
+        field_set = set(fields)
+        if "sessions" in field_set:
+            data["sessions"] = [
+                {
+                    "id": s.id,
+                    "frequency": s.frequency,
+                    "startHour": s.start_hour,
+                    "startMinute": s.start_minute,
+                    "endHour": s.end_hour,
+                    "endMinute": s.end_minute,
+                    "week": s.week,
+                    "dayOfWeek": s.day_of_week,
+                    "month": s.month,
+                    "location": s.location,
+                }
+                for s in g.sessions.all()
+            ]
+        if "schedulerConfig" in field_set:
+            data["schedulerConfig"] = g.get_scheduler_config()
+    return data
+
+
+def _serialize_session_group_full(g):
     return {
         "id": g.id,
         "name": g.name,
@@ -56,38 +121,74 @@ def _serialize_session_group(g):
     }
 
 
-def _serialize_exhibitor(e):
+def _serialize_exhibitor_summary(e):
     return {
         "year": e.year,
         "month": e.month,
         "sessionGroupId": e.session_group_id,
-        "scheduleData": e.schedule_data,
-        "statistics": e.schedule_statistics,
-        "daysWithDetails": e.days_with_details,
+    }
+
+
+def _serialize_exhibitor(e, fields=None):
+    data = _serialize_exhibitor_summary(e)
+    if fields:
+        field_set = set(fields)
+        if "statistics" in field_set:
+            data["statistics"] = e.schedule_statistics
+        if "scheduleData" in field_set:
+            data["scheduleData"] = e.schedule_data
+        if "daysWithDetails" in field_set:
+            data["daysWithDetails"] = e.days_with_details
+    return data
+
+
+def _serialize_schedule_summary(result):
+    schedule_data = result["schedule_data"]
+    statistics = result["statistics"]
+    days_with_details = result["days_with_details"]
+
+    participant_names = set()
+    total_assignments = 0
+    for week in schedule_data:
+        for session in week.get("sessions", []):
+            for member in session.get("members", []):
+                participant_names.add(member.get("name", ""))
+                total_assignments += 1
+
+    return {
+        "statistics": statistics,
+        "summary": {
+            "weekCount": len(schedule_data),
+            "sessionCount": len(days_with_details),
+            "participantCount": len(participant_names),
+            "totalAssignments": total_assignments,
+        },
     }
 
 
 def list_session_groups(params, user):
+    fields = params.get("fields")
     groups = SessionGroupService.list(user)
-    return [_serialize_session_group(g) for g in groups]
+    return [_serialize_session_group(g, fields) for g in groups]
 
 
 def get_session_group(params, user):
     group_id = params.get("sessionGroupId")
     group = SessionGroupService.get(group_id, user)
-    return _serialize_session_group(group)
+    return _serialize_session_group_full(group)
 
 
 def list_participants(params, user):
+    fields = params.get("fields")
     session_group_id = params.get("sessionGroupId")
     participants = ParticipantService.list(user, session_group_id)
-    return [_serialize_participant(p) for p in participants]
+    return [_serialize_participant(p, fields) for p in participants]
 
 
 def get_participant(params, user):
     participant_id = params.get("participantId")
     participant = ParticipantService.get(participant_id, user)
-    return _serialize_participant(participant)
+    return _serialize_participant_full(participant)
 
 
 def create_participant(params, user):
@@ -109,7 +210,7 @@ def create_participant(params, user):
         "is_anchor": params.get("isAnchor", False),
     }
     participant = ParticipantService.create(data, user)
-    return _serialize_participant(participant)
+    return _serialize_participant_full(participant)
 
 
 def update_participant(params, user):
@@ -132,7 +233,7 @@ def update_participant(params, user):
         if camel_key in params:
             data[snake_key] = params[camel_key]
     participant = ParticipantService.update(participant_id, data, user)
-    return _serialize_participant(participant)
+    return _serialize_participant_full(participant)
 
 
 def delete_participant(params, user):
@@ -148,24 +249,37 @@ def generate_schedule(params, user):
     exclude_session_occurrences = params.get("excludeSessionOccurrences", [])
 
     result = SchedulerService.generate(year, month, session_group_id, user, exclude_session_occurrences)
-    return {
-        "scheduleData": result["schedule_data"],
+
+    cache_key = _schedule_cache_key(user.id, session_group_id, year, month)
+    cache.set(cache_key, {
+        "schedule_data": result["schedule_data"],
         "statistics": result["statistics"],
-        "daysWithDetails": result["days_with_details"],
-    }
+        "days_with_details": result["days_with_details"],
+    }, SCHEDULE_CACHE_TTL)
+
+    summary = _serialize_schedule_summary(result)
+    summary["cached"] = True
+    return summary
 
 
 def save_schedule(params, user):
     year = params.get("year")
     month = params.get("month")
     session_group_id = params.get("sessionGroupId")
-    schedule_data = params.get("scheduleData")
-    statistics = params.get("statistics")
-    days_with_details = params.get("daysWithDetails")
+
+    cache_key = _schedule_cache_key(user.id, session_group_id, year, month)
+    cached = cache.get(cache_key)
+    if not cached:
+        return {
+            "error": f"No generated schedule found for {month}/{year}. Generate a schedule first.",
+        }
 
     exhibitor, created = SchedulerService.save_schedule(
-        year, month, session_group_id, user, schedule_data, statistics, days_with_details
+        year, month, session_group_id, user,
+        cached["schedule_data"], cached["statistics"], cached["days_with_details"],
     )
+    cache.delete(cache_key)
+
     return {
         "success": True,
         "created": created,
@@ -178,34 +292,62 @@ def get_schedule(params, user):
     month = params.get("month")
     session_group_id = params.get("sessionGroupId")
     exhibitor = ExhibitorService.get(year, month, session_group_id, user)
-    return _serialize_exhibitor(exhibitor)
+
+    schedule_data = exhibitor.schedule_data or []
+    days_with_details = exhibitor.days_with_details or []
+    statistics = exhibitor.schedule_statistics or []
+
+    participant_names = set()
+    total_assignments = 0
+    for week in schedule_data:
+        for session in week.get("sessions", []):
+            for member in session.get("members", []):
+                participant_names.add(member.get("name", ""))
+                total_assignments += 1
+
+    return {
+        "year": exhibitor.year,
+        "month": exhibitor.month,
+        "sessionGroupId": exhibitor.session_group_id,
+        "statistics": statistics,
+        "summary": {
+            "weekCount": len(schedule_data),
+            "sessionCount": len(days_with_details),
+            "participantCount": len(participant_names),
+            "totalAssignments": total_assignments,
+        },
+    }
 
 
 def list_schedules(params, user):
+    fields = params.get("fields")
     exhibitors = ExhibitorService.list(user)
-    return [_serialize_exhibitor(e) for e in exhibitors]
+    return [_serialize_exhibitor(e, fields) for e in exhibitors]
 
 
 TOOL_REGISTRY: dict[str, ToolDefinition] = {
     "list_session_groups": ToolDefinition(
         name="list_session_groups",
-        description="List all session groups for the current user. Returns groups with their sessions and configuration.",
+        description="List the user's session groups with session counts. Use get_session_group for full details.",
         parameters={
             "type": "object",
-            "properties": {},
+            "properties": {
+                "fields": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["sessions", "schedulerConfig"]},
+                    "description": "Extra fields to include beyond default (id, name, sessionCount). Options: sessions, schedulerConfig.",
+                },
+            },
         },
         execute=list_session_groups,
     ),
     "get_session_group": ToolDefinition(
         name="get_session_group",
-        description="Get details of a specific session group including its sessions and scheduler configuration.",
+        description="Get full details of a session group including sessions and scheduler config.",
         parameters={
             "type": "object",
             "properties": {
-                "sessionGroupId": {
-                    "type": "integer",
-                    "description": "The ID of the session group",
-                },
+                "sessionGroupId": {"type": "integer"},
             },
             "required": ["sessionGroupId"],
         },
@@ -213,13 +355,26 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
     ),
     "list_participants": ToolDefinition(
         name="list_participants",
-        description="List all participants, optionally filtered by session group. Returns participant details including availability, constraints, and traits.",
+        description="List participants with summary info. Optionally filter by session group and request extra fields. Use get_participant for full details.",
         parameters={
             "type": "object",
             "properties": {
                 "sessionGroupId": {
                     "type": "integer",
-                    "description": "Optional. Filter participants by session group ID",
+                    "description": "Filter by session group ID",
+                },
+                "fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "maxPerWeek", "maxPerMonth", "minPerMonth", "partnerId",
+                            "availability", "excludeIds", "onlySessionOccurrences",
+                            "excludeSessionOccurrences", "minSessionsTogether",
+                            "enforcedWeekDays", "traitIds",
+                        ],
+                    },
+                    "description": "Extra fields to include beyond default (id, name, sessionGroupId, isAnchor).",
                 },
             },
         },
@@ -227,14 +382,11 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
     ),
     "get_participant": ToolDefinition(
         name="get_participant",
-        description="Get details of a specific participant including all their constraints and settings.",
+        description="Get full details of a specific participant.",
         parameters={
             "type": "object",
             "properties": {
-                "participantId": {
-                    "type": "integer",
-                    "description": "The ID of the participant",
-                },
+                "participantId": {"type": "integer"},
             },
             "required": ["participantId"],
         },
@@ -242,44 +394,26 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
     ),
     "create_participant": ToolDefinition(
         name="create_participant",
-        description="Create a new participant in a session group. Requires name, session group, and scheduling constraints.",
+        description="Create a new participant in a session group.",
         parameters={
             "type": "object",
             "properties": {
-                "sessionGroupId": {
-                    "type": "integer",
-                    "description": "The session group to add the participant to",
-                },
-                "name": {
-                    "type": "string",
-                    "description": "The participant's name",
-                },
-                "maxPerWeek": {
-                    "type": "integer",
-                    "description": "Maximum sessions per week",
-                },
-                "maxPerMonth": {
-                    "type": "integer",
-                    "description": "Maximum sessions per month",
-                },
-                "minPerMonth": {
-                    "type": "integer",
-                    "description": "Minimum sessions per month",
-                },
+                "sessionGroupId": {"type": "integer"},
+                "name": {"type": "string"},
+                "maxPerWeek": {"type": "integer", "description": "Max sessions per week"},
+                "maxPerMonth": {"type": "integer", "description": "Max sessions per month"},
+                "minPerMonth": {"type": "integer", "description": "Min sessions per month"},
                 "availability": {
                     "type": "array",
                     "items": {"type": "integer"},
-                    "description": "Array of session IDs the participant is available for",
+                    "description": "Session IDs the participant is available for",
                 },
                 "excludeIds": {
                     "type": "array",
                     "items": {"type": "integer"},
-                    "description": "Array of participant IDs to avoid scheduling together",
+                    "description": "Participant IDs to avoid scheduling together",
                 },
-                "isAnchor": {
-                    "type": "boolean",
-                    "description": "Whether this participant is an anchor (should be in most sessions)",
-                },
+                "isAnchor": {"type": "boolean", "description": "Anchor participant (in most sessions)"},
             },
             "required": ["sessionGroupId", "name", "maxPerWeek", "maxPerMonth", "minPerMonth"],
         },
@@ -287,29 +421,18 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
     ),
     "update_participant": ToolDefinition(
         name="update_participant",
-        description="Update an existing participant's settings and constraints.",
+        description="Update an existing participant's settings.",
         parameters={
             "type": "object",
             "properties": {
-                "participantId": {
-                    "type": "integer",
-                    "description": "The ID of the participant to update",
-                },
-                "name": {"type": "string", "description": "New name"},
-                "maxPerWeek": {"type": "integer", "description": "New max sessions per week"},
-                "maxPerMonth": {"type": "integer", "description": "New max sessions per month"},
-                "minPerMonth": {"type": "integer", "description": "New min sessions per month"},
-                "availability": {
-                    "type": "array",
-                    "items": {"type": "integer"},
-                    "description": "New availability (array of session IDs)",
-                },
-                "excludeIds": {
-                    "type": "array",
-                    "items": {"type": "integer"},
-                    "description": "New exclude IDs",
-                },
-                "isAnchor": {"type": "boolean", "description": "New anchor status"},
+                "participantId": {"type": "integer"},
+                "name": {"type": "string"},
+                "maxPerWeek": {"type": "integer"},
+                "maxPerMonth": {"type": "integer"},
+                "minPerMonth": {"type": "integer"},
+                "availability": {"type": "array", "items": {"type": "integer"}},
+                "excludeIds": {"type": "array", "items": {"type": "integer"}},
+                "isAnchor": {"type": "boolean"},
             },
             "required": ["participantId"],
         },
@@ -317,14 +440,11 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
     ),
     "delete_participant": ToolDefinition(
         name="delete_participant",
-        description="Delete a participant from the system.",
+        description="Delete a participant by ID.",
         parameters={
             "type": "object",
             "properties": {
-                "participantId": {
-                    "type": "integer",
-                    "description": "The ID of the participant to delete",
-                },
+                "participantId": {"type": "integer"},
             },
             "required": ["participantId"],
         },
@@ -332,32 +452,24 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
     ),
     "generate_schedule": ToolDefinition(
         name="generate_schedule",
-        description="Generate a new schedule for a given year, month, and session group. This runs the scheduling algorithm and returns the optimized schedule.",
+        description="Generate and cache a schedule. Returns statistics and summary. Use save_schedule to persist.",
         parameters={
             "type": "object",
             "properties": {
-                "year": {
-                    "type": "integer",
-                    "description": "The year for the schedule (e.g., 2026)",
-                },
-                "month": {
-                    "type": "integer",
-                    "description": "The month for the schedule (1-12)",
-                },
-                "sessionGroupId": {
-                    "type": "integer",
-                    "description": "The session group to generate the schedule for",
-                },
+                "year": {"type": "integer"},
+                "month": {"type": "integer"},
+                "sessionGroupId": {"type": "integer"},
                 "excludeSessionOccurrences": {
                     "type": "array",
                     "items": {
                         "type": "object",
                         "properties": {
                             "sessionId": {"type": "integer"},
-                            "date": {"type": "string", "description": "Date in YYYY-MM-DD format"},
+                            "date": {"type": "string", "description": "YYYY-MM-DD"},
                         },
+                        "required": ["sessionId", "date"],
                     },
-                    "description": "Optional. Session occurrences to exclude from scheduling",
+                    "description": "Session occurrences to exclude",
                 },
             },
             "required": ["year", "month", "sessionGroupId"],
@@ -366,30 +478,27 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
     ),
     "save_schedule": ToolDefinition(
         name="save_schedule",
-        description="Save a generated schedule to the database. Use this after generate_schedule to persist the results.",
+        description="Save a previously generated schedule to the database. Requires generate_schedule to have been called first for the same year/month/session group.",
         parameters={
             "type": "object",
             "properties": {
-                "year": {"type": "integer", "description": "Year"},
-                "month": {"type": "integer", "description": "Month (1-12)"},
-                "sessionGroupId": {"type": "integer", "description": "Session group ID"},
-                "scheduleData": {"type": "array", "items": {"type": "object"}, "description": "The schedule data from generate_schedule"},
-                "statistics": {"type": "array", "items": {"type": "object"}, "description": "The statistics from generate_schedule"},
-                "daysWithDetails": {"type": "array", "items": {"type": "object"}, "description": "The days with details from generate_schedule"},
+                "year": {"type": "integer"},
+                "month": {"type": "integer"},
+                "sessionGroupId": {"type": "integer"},
             },
-            "required": ["year", "month", "sessionGroupId", "scheduleData", "statistics", "daysWithDetails"],
+            "required": ["year", "month", "sessionGroupId"],
         },
         execute=save_schedule,
     ),
     "get_schedule": ToolDefinition(
         name="get_schedule",
-        description="Retrieve a previously saved schedule for a specific year, month, and session group.",
+        description="Get saved schedule statistics and summary for a year/month/session group.",
         parameters={
             "type": "object",
             "properties": {
-                "year": {"type": "integer", "description": "Year"},
-                "month": {"type": "integer", "description": "Month (1-12)"},
-                "sessionGroupId": {"type": "integer", "description": "Session group ID"},
+                "year": {"type": "integer"},
+                "month": {"type": "integer"},
+                "sessionGroupId": {"type": "integer"},
             },
             "required": ["year", "month", "sessionGroupId"],
         },
@@ -397,10 +506,19 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
     ),
     "list_schedules": ToolDefinition(
         name="list_schedules",
-        description="List all saved schedules for the current user.",
+        description="List saved schedules metadata. Use fields parameter to include statistics or data.",
         parameters={
             "type": "object",
-            "properties": {},
+            "properties": {
+                "fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["statistics", "scheduleData", "daysWithDetails"],
+                    },
+                    "description": "Extra fields to include beyond default (year, month, sessionGroupId).",
+                },
+            },
         },
         execute=list_schedules,
     ),

@@ -22,7 +22,8 @@ When generating schedules:
 1. First verify the session group exists and has participants
 2. Use generate_schedule to run the optimization algorithm
 3. The algorithm respects all participant constraints (availability, max/min sessions, partner requirements, exclusions)
-4. Present the results clearly, highlighting key statistics
+4. The generated schedule is automatically cached. Call save_schedule with just year, month, and sessionGroupId to persist it
+5. Present the results clearly, highlighting key statistics
 
 When the user asks about participants:
 - Use list_participants to get all participants, optionally filtered by session group
