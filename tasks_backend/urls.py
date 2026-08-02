@@ -26,6 +26,7 @@ apiPatterns = [
     path("token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("me/", CurrentUserView.as_view(), name="current_user"),
     path("expositors/", include("exhibitors.urls")),
+    path("chat/", include("ai.urls")),
 ]
 urlpatterns = [
     path("admin/", admin.site.urls),

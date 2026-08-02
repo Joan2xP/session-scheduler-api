@@ -14,6 +14,10 @@ import os
 from datetime import timedelta
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import dj_database_url
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -47,6 +51,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "exhibitors",
     "rest_framework",
+    "ai",
 ]
 
 MIDDLEWARE = [
@@ -170,3 +175,9 @@ SIMPLE_JWT = {
     "BLACKLIST_AFTER_ROTATION": True,
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
+
+# AI Provider configuration
+AI_PROVIDER = os.environ.get("AI_PROVIDER", "openrouter")
+AI_PROVIDER_API_KEY = os.environ.get("AI_PROVIDER_API_KEY", "")
+AI_MODEL = os.environ.get("AI_MODEL", "google/gemini-2.5-flash")
+AI_MAX_TOOL_ITERATIONS = int(os.environ.get("AI_MAX_TOOL_ITERATIONS", "10"))
