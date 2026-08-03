@@ -79,7 +79,13 @@ def chat_stream(messages: list[dict], user) -> Generator[str, None, None]:
             yield _sse_event({"type": "done"})
             return
 
-        yield _sse_event({"type": "tool_call_start", "count": len(tool_calls)})
+        for tc in tool_calls:
+            yield _sse_event({
+                "type": "tool_call",
+                "tool_call_id": tc.id,
+                "name": tc.name,
+                "arguments": tc.arguments,
+            })
 
         executor = ThreadPoolExecutor(max_workers=min(len(tool_calls), 4))
         try:
@@ -105,6 +111,7 @@ def chat_stream(messages: list[dict], user) -> Generator[str, None, None]:
         for tc, result in zip(tool_calls, results):
             yield _sse_event({
                 "type": "tool_result",
+                "tool_call_id": tc.id,
                 "name": tc.name,
                 "result": result,
             })
