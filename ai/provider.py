@@ -51,16 +51,6 @@ class AIProvider(ABC):
         pass
 
     @abstractmethod
-    def chat_with_tools(
-        self,
-        messages: list[Message],
-        tools: list[ToolDefinition],
-        system_prompt: str,
-    ) -> tuple[str, list[ToolCall]]:
-        """Returns (text_content, tool_calls)."""
-        pass
-
-    @abstractmethod
     def get_tool_definitions(self, tools: list[ToolDefinition]) -> Any:
         pass
 

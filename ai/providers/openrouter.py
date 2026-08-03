@@ -92,48 +92,37 @@ class OpenRouterProvider(AIProvider):
             stream=True,
         )
 
+        tool_calls_acc = {}
+
         for chunk in stream:
-            if chunk.choices:
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    yield StreamChunk(type="text", content=delta.content)
-                if delta.tool_calls:
-                    for tc in delta.tool_calls:
-                        if tc.function:
-                            yield StreamChunk(
-                                type="tool_call",
-                                tool_call=ToolCall(
-                                    id=tc.id,
-                                    name=tc.function.name,
-                                    arguments=json.loads(tc.function.arguments) if tc.function.arguments else {},
-                                ),
-                            )
+            if not chunk.choices:
+                continue
 
-    def chat_with_tools(
-        self,
-        messages: list[Message],
-        tools: list[ToolDefinition],
-        system_prompt: str,
-    ) -> tuple[str, list[ToolCall]]:
-        tool_defs = self.get_tool_definitions(tools)
-        converted = self._convert_messages(messages, system_prompt)
+            delta = chunk.choices[0].delta
 
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=converted,
-            tools=tool_defs,
-        )
+            if delta.content:
+                yield StreamChunk(type="text", content=delta.content)
 
-        choice = response.choices[0]
-        text_content = choice.message.content or ""
-        tool_calls = []
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in tool_calls_acc:
+                        tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
+                    if tc.id:
+                        tool_calls_acc[idx]["id"] = tc.id
+                    if tc.function:
+                        if tc.function.name:
+                            tool_calls_acc[idx]["name"] = tc.function.name
+                        if tc.function.arguments:
+                            tool_calls_acc[idx]["arguments"] += tc.function.arguments
 
-        if choice.message.tool_calls:
-            for tc in choice.message.tool_calls:
-                tool_calls.append(ToolCall(
-                    id=tc.id,
-                    name=tc.function.name,
-                    arguments=json.loads(tc.function.arguments) if tc.function.arguments else {},
-                ))
-
-        return text_content, tool_calls
+        for idx in sorted(tool_calls_acc):
+            tc = tool_calls_acc[idx]
+            yield StreamChunk(
+                type="tool_call",
+                tool_call=ToolCall(
+                    id=tc["id"],
+                    name=tc["name"],
+                    arguments=json.loads(tc["arguments"]) if tc["arguments"] else {},
+                ),
+            )

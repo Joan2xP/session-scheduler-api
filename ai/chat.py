@@ -1,8 +1,10 @@
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Generator
 
 from django.conf import settings
+from django.db import close_old_connections
 
 from .provider import get_provider, Message, ToolCall, StreamChunk
 from .tools import get_all_tools, get_tool
@@ -30,6 +32,13 @@ def execute_tool(tool_call: ToolCall, user) -> dict:
         return {"error": str(e)}
 
 
+def _execute_tool_safe(tool_call: ToolCall, user) -> dict:
+    try:
+        return execute_tool(tool_call, user)
+    finally:
+        close_old_connections()
+
+
 def chat_stream(messages: list[dict], user) -> Generator[str, None, None]:
     provider = get_provider()
     tools = get_all_tools()
@@ -44,38 +53,44 @@ def chat_stream(messages: list[dict], user) -> Generator[str, None, None]:
     while iteration < MAX_ITERATIONS:
         iteration += 1
 
-        text_content, tool_calls = provider.chat_with_tools(
-            messages=conversation,
-            tools=tools,
-            system_prompt=system_prompt,
-        )
+        text_parts = []
+        tool_calls = []
 
-        if text_content:
-            yield _sse_event({"type": "text", "content": text_content})
+        for chunk in provider.chat_stream(conversation, tools, system_prompt):
+            if chunk.type == "text":
+                text_parts.append(chunk.content)
+                yield _sse_event({"type": "text", "content": chunk.content})
+            elif chunk.type == "tool_call":
+                tool_calls.append(chunk.tool_call)
 
         if not tool_calls:
+            if text_parts:
+                conversation.append(Message(role="assistant", content="".join(text_parts)))
             yield _sse_event({"type": "done"})
             return
 
-        for tc in tool_calls:
-            yield _sse_event({
-                "type": "tool_call",
-                "name": tc.name,
-                "arguments": tc.arguments,
-            })
+        yield _sse_event({"type": "tool_call_start", "count": len(tool_calls)})
 
-            result = execute_tool(tc, user)
+        with ThreadPoolExecutor(max_workers=min(len(tool_calls), 4)) as executor:
+            futures = [
+                executor.submit(_execute_tool_safe, tc, user)
+                for tc in tool_calls
+            ]
+            results = [f.result() for f in futures]
 
+        conversation.append(Message(
+            role="assistant",
+            content="".join(text_parts) if text_parts else None,
+            tool_calls=tool_calls,
+        ))
+
+        for tc, result in zip(tool_calls, results):
             yield _sse_event({
                 "type": "tool_result",
                 "name": tc.name,
                 "result": result,
             })
 
-            conversation.append(Message(
-                role="assistant",
-                tool_calls=[tc],
-            ))
             conversation.append(Message(
                 role="tool",
                 tool_calls=[{
