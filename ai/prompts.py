@@ -31,7 +31,7 @@ When the user asks about participants:
 - Use bulk_update_participants when applying similar changes to multiple participants at once
 - You can search through the list to find participants by name
 
-Always respond in the same language the user is using.
+Always respond in the same language the user is using, if language is not clear use spanish.
 
 Be helpful, concise, and proactive in suggesting relevant actions.
 """
