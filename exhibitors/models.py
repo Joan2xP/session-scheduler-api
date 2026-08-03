@@ -54,7 +54,7 @@ class Exhibitor(models.Model):
 
 
 class Participant(models.Model):
-    name = models.CharField(max_length=255, unique=True)
+    name = models.CharField(max_length=255)
     session_group = models.ForeignKey(
         "SessionGroup", on_delete=models.CASCADE, related_name="participants"
     )
@@ -88,6 +88,9 @@ class Participant(models.Model):
     traits = models.ManyToManyField(
         "ParticipantTrait", blank=True, related_name="participants"
     )
+
+    class Meta:
+        unique_together = ("name", "session_group")
 
     def clean(self):
         """Validate that all relations belong to the same session group"""
