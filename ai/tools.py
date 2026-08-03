@@ -242,6 +242,39 @@ def delete_participant(params, user):
     return {"success": True, "message": f"Participant {participant_id} deleted"}
 
 
+def bulk_update_participants(params, user):
+    updates = params.get("updates", [])
+    field_mapping = {
+        "name": "name",
+        "maxPerWeek": "max_per_week",
+        "maxPerMonth": "max_per_month",
+        "minPerMonth": "min_per_month",
+        "availability": "availability",
+        "excludeIds": "exclude_ids",
+        "onlySessionOccurrences": "only_session_occurrences",
+        "excludeSessionOccurrences": "exclude_session_occurrences",
+        "minSessionsTogether": "min_sessions_together",
+        "enforcedWeekDays": "enforced_week_days",
+        "isAnchor": "is_anchor",
+    }
+    results = []
+    for item in updates:
+        participant_id = item.get("participantId")
+        if not participant_id:
+            results.append({"error": "Missing participantId"})
+            continue
+        data = {}
+        for camel_key, snake_key in field_mapping.items():
+            if camel_key in item:
+                data[snake_key] = item[camel_key]
+        try:
+            participant = ParticipantService.update(participant_id, data, user)
+            results.append(_serialize_participant_full(participant))
+        except Exception as e:
+            results.append({"participantId": participant_id, "error": str(e)})
+    return {"results": results}
+
+
 def generate_schedule(params, user):
     year = params.get("year")
     month = params.get("month")
@@ -449,6 +482,35 @@ TOOL_REGISTRY: dict[str, ToolDefinition] = {
             "required": ["participantId"],
         },
         execute=delete_participant,
+    ),
+    "bulk_update_participants": ToolDefinition(
+        name="bulk_update_participants",
+        description="Update multiple participants at once. Use this when applying the same kind of change to many participants to avoid individual call overhead.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "updates": {
+                    "type": "array",
+                    "description": "List of participant updates",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "participantId": {"type": "integer"},
+                            "name": {"type": "string"},
+                            "maxPerWeek": {"type": "integer"},
+                            "maxPerMonth": {"type": "integer"},
+                            "minPerMonth": {"type": "integer"},
+                            "availability": {"type": "array", "items": {"type": "integer"}},
+                            "excludeIds": {"type": "array", "items": {"type": "integer"}},
+                            "isAnchor": {"type": "boolean"},
+                        },
+                        "required": ["participantId"],
+                    },
+                },
+            },
+            "required": ["updates"],
+        },
+        execute=bulk_update_participants,
     ),
     "generate_schedule": ToolDefinition(
         name="generate_schedule",

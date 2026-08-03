@@ -28,6 +28,7 @@ When generating schedules:
 When the user asks about participants:
 - Use list_participants to get all participants, optionally filtered by session group
 - Use get_participant for detailed information about a specific participant
+- Use bulk_update_participants when applying similar changes to multiple participants at once
 - You can search through the list to find participants by name
 
 Always respond in the same language the user is using.
