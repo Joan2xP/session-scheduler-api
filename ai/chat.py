@@ -1,6 +1,6 @@
 import json
 import logging
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Generator
 
 from django.conf import settings
@@ -13,6 +13,8 @@ from .prompts import get_system_prompt
 logger = logging.getLogger(__name__)
 
 MAX_ITERATIONS = getattr(settings, "AI_MAX_TOOL_ITERATIONS", 10)
+TOOL_EXECUTION_TIMEOUT = getattr(settings, "AI_TOOL_EXECUTION_TIMEOUT", 45)
+MAX_TOOL_CALLS_PER_TURN = getattr(settings, "AI_MAX_TOOL_CALLS_PER_TURN", 10)
 
 
 class ChatError(Exception):
@@ -69,14 +71,30 @@ def chat_stream(messages: list[dict], user) -> Generator[str, None, None]:
             yield _sse_event({"type": "done"})
             return
 
+        if len(tool_calls) > MAX_TOOL_CALLS_PER_TURN:
+            yield _sse_event({
+                "type": "error",
+                "content": f"Too many tool calls in one turn: {len(tool_calls)} (max {MAX_TOOL_CALLS_PER_TURN})",
+            })
+            yield _sse_event({"type": "done"})
+            return
+
         yield _sse_event({"type": "tool_call_start", "count": len(tool_calls)})
 
-        with ThreadPoolExecutor(max_workers=min(len(tool_calls), 4)) as executor:
+        executor = ThreadPoolExecutor(max_workers=min(len(tool_calls), 4))
+        try:
             futures = [
                 executor.submit(_execute_tool_safe, tc, user)
                 for tc in tool_calls
             ]
-            results = [f.result() for f in futures]
+            results = []
+            for f, tc in zip(futures, tool_calls):
+                try:
+                    results.append(f.result(timeout=TOOL_EXECUTION_TIMEOUT))
+                except FutureTimeoutError:
+                    results.append({"error": f"Tool {tc.name} timed out after {TOOL_EXECUTION_TIMEOUT}s"})
+        finally:
+            executor.shutdown(wait=False)
 
         conversation.append(Message(
             role="assistant",
