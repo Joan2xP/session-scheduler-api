@@ -190,3 +190,33 @@ AI_MODEL = os.environ.get("AI_MODEL", "google/gemini-2.5-flash")
 AI_MAX_TOOL_ITERATIONS = int(os.environ.get("AI_MAX_TOOL_ITERATIONS", "10"))
 AI_TOOL_EXECUTION_TIMEOUT = int(os.environ.get("AI_TOOL_EXECUTION_TIMEOUT", "45"))
 AI_MAX_TOOL_CALLS_PER_TURN = int(os.environ.get("AI_MAX_TOOL_CALLS_PER_TURN", "10"))
+
+# Logging
+LOG_LEVEL = os.environ.get("DJANGO_LOG_LEVEL", "INFO").upper()
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "standard": {
+            "format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stdout",
+            "formatter": "standard",
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": LOG_LEVEL,
+    },
+    "loggers": {
+        "exhibitors": {
+            "handlers": ["console"],
+            "level": LOG_LEVEL,
+            "propagate": False,
+        },
+    },
+}
