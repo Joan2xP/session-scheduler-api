@@ -1,11 +1,13 @@
-import pandas as pd
-from ortools.sat.python import cp_model
-from datetime import datetime, timedelta
-import calendar
-import os
-from jinja2 import Template
-import imgkit
 import argparse
+import calendar
+import logging
+import os
+import random
+import time
+from datetime import datetime, timedelta
+
+from ortools.sat.python import cp_model
+
 from django.db.models import Case, When, Value, IntegerField
 from exhibitors.models import (
     Participant,
@@ -14,7 +16,8 @@ from exhibitors.models import (
     ParticipantTrait,
     DEFAULT_SCHEDULER_CONFIG,
 )
-import random
+
+logger = logging.getLogger(__name__)
 
 
 class SessionScheduler:
@@ -52,6 +55,10 @@ class SessionScheduler:
                 self.scheduler_config["weekend_group_size"] = scheduler_config[
                     "weekend_group_size"
                 ]
+            if "solver" in scheduler_config:
+                self.scheduler_config.setdefault("solver", {}).update(
+                    scheduler_config["solver"]
+                )
 
         # Group sizes: explicit params override config
         self.weekday_group_size = (
@@ -96,13 +103,16 @@ class SessionScheduler:
         self.available_sessions = []
         self.all_available_sessions = []
 
+        # Date info cache: date_str -> (date_obj, iso_week, day_offset, weekday)
+        self.date_info = {}
+
         self.initialize()
 
     def get_data(self):
         # Fetch participants filtered by session_group_id
         participants = Participant.objects.filter(
             session_group_id=self.session_group_id
-        )
+        ).prefetch_related("traits")
 
         # Use participant IDs instead of names
         self.people = [p.id for p in participants]
@@ -183,7 +193,19 @@ class SessionScheduler:
             if session_id is not None and date_str:
                 excluded_occurrences.add((session_id, date_str))
 
-        print(f"Excluding session occurrences: {excluded_occurrences}")
+        # Precompute date info for every day in the month
+        first_day_weekday = start_date.weekday()
+        for day_offset in range(days_in_month):
+            current_date = start_date + timedelta(days=day_offset)
+            date_str = current_date.strftime("%Y-%m-%d")
+            week_of_month = ((current_date.day + first_day_weekday - 1) // 7) + 1
+            self.date_info[date_str] = (
+                current_date,
+                current_date.isocalendar()[1],
+                day_offset,
+                current_date.weekday(),
+                week_of_month,
+            )
 
         # For each session in the session group, generate occurrences
         for session_id, metadata in self.session_metadata.items():
@@ -194,18 +216,16 @@ class SessionScheduler:
 
             for day_offset in range(days_in_month):
                 current_date = start_date + timedelta(days=day_offset)
-                current_day_of_week = current_date.weekday()
                 date_str = current_date.strftime("%Y-%m-%d")
+                _, _, _, current_day_of_week, week_of_month = self.date_info[date_str]
 
                 # Check if this date matches the session's frequency pattern
                 should_include = False
 
                 if frequency == "daily":
-                    # Daily: include every day
                     should_include = True
 
                 elif frequency == "weekly":
-                    # Weekly: include if day_of_week matches
                     if (
                         session_day_of_week is not None
                         and current_day_of_week == session_day_of_week
@@ -213,21 +233,14 @@ class SessionScheduler:
                         should_include = True
 
                 elif frequency == "monthly":
-                    # Monthly: include if day_of_week matches AND week of month matches
                     if (
                         session_day_of_week is not None
                         and current_day_of_week == session_day_of_week
                     ):
-                        # Calculate week of month (1-based)
-                        first_day_weekday = start_date.weekday()
-                        week_of_month = (
-                            (current_date.day + first_day_weekday - 1) // 7
-                        ) + 1
                         if session_week is None or week_of_month == session_week:
                             should_include = True
 
                 elif frequency == "yearly":
-                    # Yearly: include if month matches AND day_of_week matches AND week matches
                     if (
                         session_month is not None
                         and current_date.month == session_month
@@ -236,19 +249,12 @@ class SessionScheduler:
                             session_day_of_week is not None
                             and current_day_of_week == session_day_of_week
                         ):
-                            # Calculate week of month
-                            first_day_weekday = start_date.weekday()
-                            week_of_month = (
-                                (current_date.day + first_day_weekday - 1) // 7
-                            ) + 1
                             if session_week is None or week_of_month == session_week:
                                 should_include = True
 
                 if should_include:
                     occurrence = (session_id, date_str)
-                    # Add to all_available_sessions (including excluded)
                     self.all_available_sessions.append(occurrence)
-                    # Add to available_sessions only if not excluded
                     if occurrence not in excluded_occurrences:
                         self.available_sessions.append(occurrence)
 
@@ -257,8 +263,22 @@ class SessionScheduler:
         self.all_available_sessions.sort(key=lambda x: (x[1], x[0]))
 
     def initialize(self):
+        t0 = time.perf_counter()
         self.get_data()
+        logger.info(
+            "data loaded: %d participants, %d sessions",
+            len(self.people),
+            len(self.sessions_cache),
+        )
+
+        t1 = time.perf_counter()
         self.preprocess_available_sessions()
+        logger.info(
+            "preprocessed: %d available occurrences (%d total, %d excluded)",
+            len(self.available_sessions),
+            len(self.all_available_sessions),
+            len(self.all_available_sessions) - len(self.available_sessions),
+        )
 
         # Process participant data using IDs as keys
         for row in self.rows:
@@ -329,6 +349,14 @@ class SessionScheduler:
 
         # Resolve trait-based exclusions
         self.resolve_trait_exclusions()
+
+        t2 = time.perf_counter()
+        n_vars = len(self.people) * len(self.available_sessions)
+        logger.info(
+            "model initialized: %d attendance variables (%.1fs total)",
+            n_vars,
+            t2 - t0,
+        )
 
     def resolve_trait_exclusions(self):
         """Convert trait position-based exclusions to (sessionId, date) exclusions."""
@@ -408,7 +436,7 @@ class SessionScheduler:
                     if not isinstance(occ, dict):
                         invalid_format = True
                         break
-                    print(f"{participant_id}: only_session_occurrences: {occ}")
+                    logger.debug("%d: only_session_occurrences: %s", participant_id, occ)
                     session_id = occ.get("sessionId")
                     date_str = occ.get("date")
                     if session_id is not None and date_str:
@@ -512,7 +540,6 @@ class SessionScheduler:
 
     def add_minimum_monthly_constraints(self):
         """Ensure each participant attends at least the minimum number of sessions per month."""
-        print(f"available sessions: {len(self.available_sessions)}")
         for participant_id in self.people:
             min_per_month = self.min_monthly[participant_id]
             # Adjust minimum based on available sessions
@@ -546,9 +573,7 @@ class SessionScheduler:
             current_week = None
 
             for session_id, date in self.available_sessions:
-                # Parse the date and calculate the ISO week number
-                date_obj = datetime.strptime(date, "%Y-%m-%d")
-                week_number = date_obj.isocalendar()[1]
+                _, week_number, _, _, _ = self.date_info[date]
 
                 # If the week changes, add the constraint for the previous week
                 if current_week is not None and week_number != current_week:
@@ -576,11 +601,9 @@ class SessionScheduler:
     def add_group_size_constraints(self):
         """Ensure group size constraints are respected."""
         for session_id, date in self.available_sessions:
-            # Calculate day of week from date
-            date_obj = datetime.strptime(date, "%Y-%m-%d")
-            day_of_week = date_obj.weekday()  # 0 = Monday, 6 = Sunday
+            _, _, _, weekday, _ = self.date_info[date]
             group_size = (
-                self.weekend_group_size if day_of_week >= 5 else self.weekday_group_size
+                self.weekend_group_size if weekday >= 5 else self.weekday_group_size
             )
             group_members = [
                 self.attendance[participant_id][(session_id, date)]
@@ -661,116 +684,74 @@ class SessionScheduler:
 
     def add_diversity_objective(self):
         """
-        A more lightweight diversity objective that encourages diverse pairings
-        by minimizing repeated appearances of the same pairs.
+        Minimize the maximum number of times any participant pair is scheduled together.
         Returns the max_appearances variable for combined objective.
         """
-        # Track pair occurrences
+        # Precompute feasible occurrences per participant (availability pruning)
+        availability_enabled = self.scheduler_config["constraints"]["availability"]
+        feasible = {}
+        for pid in self.people:
+            if availability_enabled and pid in self.availability:
+                avail_set = set(self.availability[pid])
+                feasible[pid] = [
+                    (sid, d)
+                    for sid, d in self.available_sessions
+                    if sid in avail_set
+                ]
+            else:
+                feasible[pid] = self.available_sessions
+
+        # Track pair occurrences — only where both participants can attend
         pair_counts = {}
+        for i, p1 in enumerate(self.people):
+            for j, p2 in enumerate(self.people):
+                if i >= j:
+                    continue
+                # Intersect feasible occurrences
+                f1 = set(feasible[p1])
+                shared = [(sid, d) for sid, d in feasible[p2] if (sid, d) in f1]
+                if not shared:
+                    continue
 
-        # For each participant pair, count how many times they're scheduled together
-        for i, participant1 in enumerate(self.people):
-            for j, participant2 in enumerate(self.people):
-                if i < j:  # Avoid duplicate pairs
-                    pair_key = f"p{participant1}_p{participant2}"
-                    pair_counts[pair_key] = []
+                pair_key = f"p{p1}_p{p2}"
+                pair_vars = []
 
-                    # Count occurrences across all sessions
-                    for session_id, date in self.available_sessions:
-                        # Create a variable for this pair at this session occurrence
-                        pair_var = self.model.NewBoolVar(
-                            f"pair_{pair_key}_s{session_id}_{date}"
-                        )
+                for session_id, date in shared:
+                    pair_var = self.model.NewBoolVar(
+                        f"pair_{pair_key}_s{session_id}_{date}"
+                    )
+                    # pair_var >= a + b - 1  (forces pair_var=1 when both attend;
+                    # solver minimizes so pair_var=0 otherwise)
+                    self.model.Add(
+                        pair_var
+                        >= self.attendance[p1][(session_id, date)]
+                        + self.attendance[p2][(session_id, date)]
+                        - 1
+                    )
+                    pair_vars.append(pair_var)
 
-                        # Link this variable to the attendance of both participants
-                        # pair_var is 1 only if both are attending this session
-                        self.model.AddBoolAnd(
-                            [
-                                self.attendance[participant1][(session_id, date)],
-                                self.attendance[participant2][(session_id, date)],
-                            ]
-                        ).OnlyEnforceIf(pair_var)
+                pair_counts[pair_key] = pair_vars
 
-                        # pair_var is 0 if either participant is not attending
-                        self.model.AddBoolOr(
-                            [
-                                self.attendance[participant1][(session_id, date)].Not(),
-                                self.attendance[participant2][(session_id, date)].Not(),
-                            ]
-                        ).OnlyEnforceIf(pair_var.Not())
+        if not pair_counts:
+            return None
 
-                        pair_counts[pair_key].append(pair_var)
-
-        # Create objective: minimize the maximum number of times any pair appears together
+        # Minimize the maximum pair count
         max_appearances = self.model.NewIntVar(
             0, len(self.available_sessions), "max_pair_appearances"
         )
 
-        # For each pair, create a variable representing their total appearances
-        pair_totals = []
         for pair_key, vars_list in pair_counts.items():
             pair_total = self.model.NewIntVar(0, len(vars_list), f"total_{pair_key}")
             self.model.Add(pair_total == sum(vars_list))
-            pair_totals.append(pair_total)
-
-            # Constrain max_appearances to be >= each pair's count
             self.model.Add(max_appearances >= pair_total)
 
         return max_appearances
-
-    def add_session_separation_objective(self):
-        """
-        Add an objective to maximize the minimum separation between sessions for each participant.
-        Returns the sum of min_gap variables for combined objective.
-        """
-        min_gap_vars = []
-        start_date = datetime.strptime(self.start_date, "%Y-%m-%d")
-
-        for participant_id in self.people:
-            # Collect all (session_id, date) pairs with their day offsets
-            participant_sessions = []
-            for session_id, date in self.available_sessions:
-                date_obj = datetime.strptime(date, "%Y-%m-%d")
-                day_offset = (date_obj - start_date).days
-                participant_sessions.append((session_id, date, day_offset))
-
-            # Skip participants who will only attend one session
-            if len(participant_sessions) <= 1:
-                continue
-
-            # Create a variable for the minimum gap for this participant
-            min_gap = self.model.NewIntVar(0, 31, f"min_gap_p{participant_id}")
-            min_gap_vars.append(min_gap)
-
-            # Add constraints to calculate the gaps between sessions
-            gap_vars = []
-            for i in range(len(participant_sessions)):
-                for j in range(i + 1, len(participant_sessions)):
-                    _, _, day_offset1 = participant_sessions[i]
-                    _, _, day_offset2 = participant_sessions[j]
-
-                    # Create a variable for the gap (in days)
-                    gap_var = self.model.NewIntVar(
-                        0, 31, f"gap_p{participant_id}_{i}_{j}"
-                    )
-                    self.model.AddAbsEquality(
-                        gap_var,
-                        day_offset2 - day_offset1,
-                    )
-                    gap_vars.append(gap_var)
-
-            # Ensure the minimum gap is less than or equal to all gaps
-            if gap_vars:
-                self.model.AddMinEquality(min_gap, gap_vars)
-
-        return sum(min_gap_vars) if min_gap_vars else None
 
     def add_consecutive_days_penalty_objective(self):
         """
         Add an objective to penalize participants attending sessions on consecutive days.
         Returns the total consecutive days count for combined objective.
         """
-        start_date = datetime.strptime(self.start_date, "%Y-%m-%d")
         consecutive_day_vars = []
 
         # Group sessions by date
@@ -801,10 +782,10 @@ class SessionScheduler:
                 date1 = sorted_dates[i]
                 date2 = sorted_dates[i + 1]
 
-                # Check if dates are consecutive
-                d1 = datetime.strptime(date1, "%Y-%m-%d")
-                d2 = datetime.strptime(date2, "%Y-%m-%d")
-                if (d2 - d1).days == 1:
+                # Check if dates are consecutive using cached day offsets
+                _, _, offset1, _, _ = self.date_info[date1]
+                _, _, offset2, _, _ = self.date_info[date2]
+                if offset2 - offset1 == 1:
                     # Create indicator: 1 if attending both consecutive days
                     consecutive_var = self.model.NewBoolVar(
                         f"consecutive_p{participant_id}_{date1}_{date2}"
@@ -820,7 +801,7 @@ class SessionScheduler:
         return sum(consecutive_day_vars) if consecutive_day_vars else None
 
     def set_combined_objective(
-        self, diversity_var, separation_var, consecutive_var, anchor_var=None
+        self, diversity_var, consecutive_var, anchor_var=None
     ):
         """
         Set a single combined objective with weights for all objectives.
@@ -833,14 +814,6 @@ class SessionScheduler:
         if diversity_var is not None and objectives_config["diversity"]["enabled"]:
             weight = objectives_config["diversity"]["weight"]
             objective_terms.append(weight * diversity_var)
-
-        if (
-            separation_var is not None
-            and objectives_config["session_separation"]["enabled"]
-        ):
-            weight = objectives_config["session_separation"]["weight"]
-            # Negative because we want to maximize separation
-            objective_terms.append(-weight * separation_var)
 
         if (
             consecutive_var is not None
@@ -877,9 +850,12 @@ class SessionScheduler:
                 participant_id, str(participant_id)
             )
             partner_name = self.participant_names.get(partner_id, str(partner_id))
-            print(
-                f"Adding min sessions together constraint for {participant_name} and {partner_name} "
-                f"on session {target_session_id}: {min_sessions}"
+            logger.debug(
+                "min_sessions_together: %s + %s on session %d: %d",
+                participant_name,
+                partner_name,
+                target_session_id,
+                min_sessions,
             )
 
             # Collect attendance variables for both participants on the specified session
@@ -934,10 +910,33 @@ class SessionScheduler:
                     self.model.Add(sum(day_vars) <= 1)
 
     def initialize_solver(self):
-        """Initialize the solver and set parameters."""
+        """Initialize the solver and set parameters from config/env."""
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = 165  # 2 min 45 sec time limit
-        # solver.parameters.log_search_progress = True  # Enable detailed logging
+        solver_config = self.scheduler_config.get("solver", {})
+
+        max_time = solver_config.get(
+            "max_time_in_seconds",
+            int(os.environ.get("SCHEDULER_MAX_TIME_SECONDS", "165")),
+        )
+        num_workers = solver_config.get(
+            "num_search_workers",
+            int(os.environ.get("SCHEDULER_NUM_WORKERS", "2")),
+        )
+        log_progress = solver_config.get(
+            "log_search_progress",
+            os.environ.get("SCHEDULER_LOG_PROGRESS", "").lower() == "true",
+        )
+
+        solver.parameters.max_time_in_seconds = max_time
+        solver.parameters.num_search_workers = num_workers
+        solver.parameters.log_search_progress = log_progress
+
+        logger.info(
+            "solving (workers=%d, max_time=%ds, log_progress=%s)",
+            num_workers,
+            max_time,
+            log_progress,
+        )
         return solver
 
     def format_schedule(self, solver):
@@ -955,13 +954,13 @@ class SessionScheduler:
             "Domingo",
         ]
 
+        available_set = set(self.available_sessions)
+
         for session_id, date in sorted(
             self.all_available_sessions, key=lambda x: (x[1], x[0])
         ):
-            # Parse the date
-            date_obj = datetime.strptime(date, "%Y-%m-%d")
-            day_of_week = date_obj.weekday()
-            day_name = day_names_es[day_of_week]
+            date_obj, _, _, weekday, _ = self.date_info[date]
+            day_name = day_names_es[weekday]
 
             # Get session metadata
             metadata = self.session_metadata.get(session_id, {})
@@ -978,7 +977,7 @@ class SessionScheduler:
             time_period = "MAÑANA" if start_hour < 12 else "TARDE"
 
             # Check if this occurrence is in available_sessions (not excluded)
-            if (session_id, date) not in self.available_sessions:
+            if (session_id, date) not in available_set:
                 # Add to schedule data with no members
                 schedule_data.append(
                     {
@@ -1067,9 +1066,8 @@ class SessionScheduler:
         return days_with_details
 
     def calculate_statistics(self, solver):
-        """Calculate and print attendance statistics."""
+        """Calculate attendance statistics."""
         attendance_data = {}
-        start_date = datetime.strptime(self.start_date, "%Y-%m-%d")
 
         for participant_id in self.people:
             participant_sessions = []
@@ -1078,16 +1076,14 @@ class SessionScheduler:
                     solver.Value(self.attendance[participant_id][(session_id, date)])
                     == 1
                 ):
-                    date_obj = datetime.strptime(date, "%Y-%m-%d")
+                    date_obj, _, _, _, _ = self.date_info[date]
                     participant_sessions.append(str(date_obj.day))
             attendance_data[participant_id] = participant_sessions
 
-        print("\nAttendance Summary:")
         attendance_summary = []
         for participant_id, sessions in attendance_data.items():
             session_count = len(sessions)
             name = self.participant_names.get(participant_id, str(participant_id))
-            print(f"{name}: {session_count} sessions")
             sessions.sort(key=lambda x: int(x))
             attendance_summary.append(
                 {
@@ -1110,21 +1106,12 @@ class SessionScheduler:
         current_week_number = None
         week_data = {"week_number": None, "days": []}
 
-        # Get the first day of the month
-        first_day = datetime.strptime(self.start_date, "%Y-%m-%d")
+        year_month = self.start_date[:7]  # "YYYY-MM"
 
         for entry in schedule_data:
-            # Extract the date from the entry
-            date_obj = datetime.strptime(
-                f"{entry['Date'].split(' ')[1]}-{self.start_date.split('-')[1]}-{self.start_date.split('-')[0]}",
-                "%d-%m-%Y",
-            )
-
-            # Calculate week number based on days from start of month
-            # Get the weekday of the first day of the month (0=Monday, 6=Sunday)
-            first_day_weekday = first_day.weekday()
-            # Calculate week of month (1-based)
-            week_number = ((date_obj.day + first_day_weekday - 1) // 7) + 1
+            day_num = int(entry["Date"].split(" ")[1])
+            date_str = f"{year_month}-{day_num:02d}"
+            _, _, _, _, week_number = self.date_info[date_str]
 
             # If the week changes, start a new week
             if current_week_number != week_number:
@@ -1140,7 +1127,7 @@ class SessionScheduler:
             week_data["sessions"].append(
                 {
                     "name": entry["Date"].split(" ")[0],  # Day name (e.g., "Monday")
-                    "date": date_obj.day,  # Day of the month (e.g., 1, 2, 3)
+                    "date": day_num,  # Day of the month (e.g., 1, 2, 3)
                     "members": entry["Members"] if entry["Members"] else [],
                     "sessionId": entry["sessionId"],
                 }
@@ -1154,8 +1141,10 @@ class SessionScheduler:
 
     def solve_group_scheduling(self):
         """Solve the scheduling problem."""
+        t_total = time.perf_counter()
         constraints = self.scheduler_config["constraints"]
-        print(f"Applying constraints based on configuration: {constraints}")
+        enabled = [k for k, v in constraints.items() if v]
+        logger.info("applying constraints: %s", ", ".join(enabled))
 
         # Add constraints based on config
         if constraints["availability"]:
@@ -1185,40 +1174,60 @@ class SessionScheduler:
 
         # Build objective components
         diversity_var = self.add_diversity_objective()
-        separation_var = self.add_session_separation_objective()
         consecutive_var = self.add_consecutive_days_penalty_objective()
         anchor_var = self.add_anchor_objective()
 
         # Set combined weighted objective
-        self.set_combined_objective(
-            diversity_var, separation_var, consecutive_var, anchor_var
+        self.set_combined_objective(diversity_var, consecutive_var, anchor_var)
+
+        t_model = time.perf_counter()
+        proto = self.model.Proto()
+        logger.info(
+            "model built: %d variables, %d constraints (%.1fs)",
+            len(proto.variables),
+            len(proto.constraints),
+            t_model - t_total,
         )
 
         # Solve the model
         solver = self.initialize_solver()
 
-        print("Solving the model...")
+        t_solve = time.perf_counter()
         status = solver.Solve(self.model)
+        solve_time = time.perf_counter() - t_solve
 
         if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            print(f"Solution found with status: {solver.StatusName(status)}")
+            logger.info(
+                "solved: %s in %.1fs (objective=%.0f, branches=%d, conflicts=%d)",
+                solver.StatusName(status),
+                solve_time,
+                solver.ObjectiveValue(),
+                solver.NumBranches(),
+                solver.NumConflicts(),
+            )
 
             # Format schedule
             schedule_data = self.format_schedule(solver)
-            schedule_df = pd.DataFrame(schedule_data)
-            formatted_data = self.format_schedule_data(
-                schedule_df.to_dict(orient="records")
-            )
+            formatted_data = self.format_schedule_data(schedule_data)
 
             # Calculate statistics
             statistics = self.calculate_statistics(solver)
 
             days_with_details = self.get_days_with_details()
 
+            total_time = time.perf_counter() - t_total
+            logger.info("generation complete (%.1fs total)", total_time)
+
             return formatted_data, statistics, days_with_details
 
         else:
-            print(f"No solution found: {solver.StatusName(status)}")
+            logger.warning(
+                "no solution found: %s (%.1fs, branches=%d, conflicts=%d)",
+                solver.StatusName(status),
+                solve_time,
+                solver.NumBranches(),
+                solver.NumConflicts(),
+            )
             return False
 
 
@@ -1256,7 +1265,8 @@ if __name__ == "__main__":
     result = scheduler.solve_group_scheduling()
     if result:
         formatted_data, statistics, days_with_details = result
-        print(f"\nSchedule generated successfully!")
-        print(f"Total sessions: {len(scheduler.available_sessions)}")
+        logger.info(
+            "schedule generated: %d sessions", len(scheduler.available_sessions)
+        )
     else:
-        print("Failed to generate schedule.")
+        logger.error("failed to generate schedule")
