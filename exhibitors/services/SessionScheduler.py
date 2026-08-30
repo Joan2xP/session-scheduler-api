@@ -1,9 +1,11 @@
 import argparse
 import calendar
+import copy
 import logging
 import os
 import random
 import time
+from collections import defaultdict
 from datetime import datetime, timedelta
 
 from ortools.sat.python import cp_model
@@ -20,6 +22,14 @@ from exhibitors.models import (
 logger = logging.getLogger(__name__)
 
 
+class SchedulerInfeasibleError(Exception):
+    """Raised when the scheduling problem is infeasible."""
+
+    def __init__(self, message, reasons=None):
+        super().__init__(message)
+        self.reasons = reasons or []
+
+
 class SessionScheduler:
     def __init__(
         self,
@@ -34,8 +44,8 @@ class SessionScheduler:
         self.session_group_id = session_group_id
         self.exclude_session_occurrences = exclude_session_occurrences or []
 
-        # Merge scheduler config with defaults
-        self.scheduler_config = DEFAULT_SCHEDULER_CONFIG.copy()
+        # Merge scheduler config with defaults (deepcopy to avoid mutating the global)
+        self.scheduler_config = copy.deepcopy(DEFAULT_SCHEDULER_CONFIG)
         if scheduler_config:
             if "constraints" in scheduler_config:
                 self.scheduler_config["constraints"].update(
@@ -47,14 +57,15 @@ class SessionScheduler:
                         self.scheduler_config["objectives"][key].update(val)
                     else:
                         self.scheduler_config["objectives"][key] = val
-            if "weekday_group_size" in scheduler_config:
-                self.scheduler_config["weekday_group_size"] = scheduler_config[
-                    "weekday_group_size"
-                ]
-            if "weekend_group_size" in scheduler_config:
-                self.scheduler_config["weekend_group_size"] = scheduler_config[
-                    "weekend_group_size"
-                ]
+            # Accept both snake_case and camelCase group-size keys
+            for snake, camel in [
+                ("weekday_group_size", "weekdayGroupSize"),
+                ("weekend_group_size", "weekendGroupSize"),
+            ]:
+                if snake in scheduler_config:
+                    self.scheduler_config[snake] = scheduler_config[snake]
+                elif camel in scheduler_config:
+                    self.scheduler_config[snake] = scheduler_config[camel]
             if "solver" in scheduler_config:
                 self.scheduler_config.setdefault("solver", {}).update(
                     scheduler_config["solver"]
@@ -412,62 +423,163 @@ class SessionScheduler:
                         if (sid, date_str) not in existing_set:
                             existing.append({"sessionId": sid, "date": date_str})
 
+    def _compute_feasible_occurrences(self):
+        """Compute feasible occurrences per participant after all constraint filters."""
+        cfg = self.scheduler_config["constraints"]
+        all_set = set(self.all_available_sessions)
+        feasible = {}
+
+        for pid in self.people:
+            avail = set(self.availability.get(pid, []))
+            only_set = None
+            if cfg.get("only_session_occurrences"):
+                only = self.only_session_occurrences.get(pid)
+                if only:
+                    raw = {
+                        (o.get("sessionId"), o.get("date"))
+                        for o in only
+                        if isinstance(o, dict)
+                        and o.get("sessionId") is not None
+                        and o.get("date")
+                    }
+                    valid = raw & all_set
+                    only_set = valid if valid else None
+            excl_set = set()
+            if cfg.get("exclude_session_occurrences"):
+                excl = self.exclude_session_occurrences_per_participant.get(pid, [])
+                excl_set = {
+                    (o.get("sessionId"), o.get("date"))
+                    for o in excl
+                    if isinstance(o, dict)
+                } & all_set
+            out = []
+            for sid, d in self.available_sessions:
+                if cfg.get("availability") and sid not in avail:
+                    continue
+                if only_set is not None and (sid, d) not in only_set:
+                    continue
+                if (sid, d) in excl_set:
+                    continue
+                out.append((sid, d))
+            feasible[pid] = out
+
+        return feasible
+
     def validate(self):
-        """Pre-flight checks for common infeasibility causes. Returns list of warnings."""
+        """Pre-flight checks for common infeasibility causes. Returns list of warning strings."""
         warnings = []
-        availability_enabled = self.scheduler_config["constraints"]["availability"]
+        cfg = self.scheduler_config["constraints"]
+        availability_enabled = cfg["availability"]
+        n_occ = len(self.available_sessions)
 
-        # Check: participants with min_per_month > 0 but no available sessions
-        if availability_enabled:
-            for pid in self.people:
-                avail = self.availability.get(pid, [])
-                min_month = self.min_monthly.get(pid, 0)
-                if min_month > 0 and not avail:
-                    name = self.participant_names.get(pid, str(pid))
-                    warnings.append(
-                        f"Participant '{name}' has min_per_month={min_month} but no available sessions"
-                    )
+        def adj_min(pid):
+            m = self.min_monthly.get(pid, 0)
+            if n_occ <= 20:
+                m -= 3
+            return max(0, m)
 
-        # Check: partners with zero overlapping sessions
-        if self.scheduler_config["constraints"]["partner"]:
+        name = lambda pid: self.participant_names.get(pid, str(pid))
+
+        # Compute feasible occurrences per participant
+        feasible = self._compute_feasible_occurrences()
+
+        # 1. Per-participant: min vs feasible capacity
+        total_min = 0
+        for pid in self.people:
+            m = adj_min(pid)
+            total_min += m
+            if m <= 0:
+                continue
+            f = feasible[pid]
+            maxw = self.max_weekly.get(pid, 0)
+            maxm = self.max_monthly.get(pid, 0)
+            weeks = {self.date_info[d][1] for _, d in f} if f else set()
+            caps = []
+            if maxm:
+                caps.append(maxm)
+            if maxw and weeks:
+                caps.append(maxw * len(weeks))
+            caps.append(len(f))
+            cap = min(caps) if caps else 0
+            if m > cap:
+                reason_parts = [f"feasible_occurrences={len(f)}"]
+                if availability_enabled and not self.availability.get(pid, []):
+                    reason_parts.append("no availability set")
+                if cfg.get("only_session_occurrences") and pid in self.only_session_occurrences:
+                    reason_parts.append("restricted by only_session_occurrences")
+                if cfg.get("exclude_session_occurrences") and pid in self.exclude_session_occurrences_per_participant:
+                    reason_parts.append("restricted by exclude_session_occurrences/trait")
+                if maxw and weeks:
+                    reason_parts.append(f"max_per_week={maxw} x {len(weeks)} weeks")
+                if maxm:
+                    reason_parts.append(f"max_per_month={maxm}")
+                warnings.append(
+                    f"'{name(pid)}' has min_per_month={m} but can attend at most {cap} sessions "
+                    f"({', '.join(reason_parts)})"
+                )
+
+        # 2. Sum of mins vs total slots
+        slots = sum(
+            self.weekend_group_size
+            if self.date_info[d][3] >= 5
+            else self.weekday_group_size
+            for _, d in self.available_sessions
+        )
+        if total_min > slots:
+            warnings.append(
+                f"Total min_per_month ({total_min}) exceeds total available slots ({slots}) — "
+                f"not enough capacity for everyone"
+            )
+
+        # 3. Partners: shared feasible occurrences vs both mins
+        if cfg.get("partner"):
+            seen_pairs = set()
             for pid, partner_id in self.partners.items():
                 if partner_id not in self.people:
                     continue
-                if availability_enabled:
-                    p_sessions = set(self.availability.get(pid, []))
-                    partner_sessions = set(self.availability.get(partner_id, []))
-                    overlap = p_sessions & partner_sessions
-                    if not overlap:
-                        p_name = self.participant_names.get(pid, str(pid))
-                        partner_name = self.participant_names.get(
-                            partner_id, str(partner_id)
-                        )
-                        warnings.append(
-                            f"Partners '{p_name}' and '{partner_name}' have no overlapping sessions — "
-                            f"they can never attend together"
-                        )
+                pair = tuple(sorted([pid, partner_id]))
+                if pair in seen_pairs:
+                    continue
+                seen_pairs.add(pair)
+                shared = set(feasible[pid]) & set(feasible[partner_id])
+                m1, m2 = adj_min(pid), adj_min(partner_id)
+                maxm1 = self.max_monthly.get(pid, 0)
+                maxm2 = self.max_monthly.get(partner_id, 0)
+                needed = max(m1, m2)
+                if needed > len(shared):
+                    warnings.append(
+                        f"Partners '{name(pid)}' (min={m1}) and '{name(partner_id)}' (min={m2}) "
+                        f"need {max(m1, m2)} shared sessions but only have {len(shared)} in common"
+                    )
+                elif m1 > 0 and maxm2 and m1 > maxm2:
+                    warnings.append(
+                        f"'{name(pid)}' min={m1} exceeds partner '{name(partner_id)}' "
+                        f"max_per_month={maxm2}"
+                    )
+                elif m2 > 0 and maxm1 and m2 > maxm1:
+                    warnings.append(
+                        f"'{name(partner_id)}' min={m2} exceeds partner '{name(pid)}' "
+                        f"max_per_month={maxm1}"
+                    )
 
-        # Check: group size vs available participants per session
-        if self.scheduler_config["constraints"]["group_size"]:
-            for session_id, date in self.available_sessions:
-                date_obj, _, _, weekday, _ = self.date_info[date]
+        # 4. Per-occurrence staffing: feasible participants vs required group size
+        if cfg.get("group_size"):
+            per_occ = defaultdict(list)
+            for pid in self.people:
+                for o in feasible[pid]:
+                    per_occ[o].append(pid)
+            for sid, d in self.available_sessions:
+                weekday = self.date_info[d][3]
                 required = (
                     self.weekend_group_size
                     if weekday >= 5
                     else self.weekday_group_size
                 )
-                if availability_enabled:
-                    available_count = sum(
-                        1
-                        for pid in self.people
-                        if session_id in self.availability.get(pid, [])
+                if len(per_occ[(sid, d)]) < required:
+                    warnings.append(
+                        f"Session {sid} on {d}: only {len(per_occ[(sid, d)])} participants "
+                        f"can attend, but group_size={required}"
                     )
-                    if available_count < required:
-                        metadata = self.session_metadata.get(session_id, {})
-                        warnings.append(
-                            f"Session {session_id} on {date} needs {required} participants "
-                            f"but only {available_count} are available"
-                        )
 
         return warnings
 
@@ -1260,11 +1372,12 @@ class SessionScheduler:
             logger.warning(
                 "problem is INFEASIBLE — constraints conflict (%.1fs)", feas_time
             )
-            if warnings:
-                logger.warning(
-                    "likely cause: see validation warnings above"
-                )
-            return False
+            for w in warnings:
+                logger.warning("  cause: %s", w)
+            raise SchedulerInfeasibleError(
+                "Schedule is infeasible — constraints conflict",
+                reasons=warnings,
+            )
 
         logger.info(
             "feasibility confirmed: %s in %.1fs",
@@ -1362,11 +1475,13 @@ if __name__ == "__main__":
         weekend_group_size=3,
     )
 
-    result = scheduler.solve_group_scheduling()
-    if result:
+    try:
+        result = scheduler.solve_group_scheduling()
         formatted_data, statistics, days_with_details = result
         logger.info(
             "schedule generated: %d sessions", len(scheduler.available_sessions)
         )
-    else:
-        logger.error("failed to generate schedule")
+    except SchedulerInfeasibleError as e:
+        logger.error("infeasible: %s", e)
+        for r in e.reasons:
+            logger.error("  reason: %s", r)

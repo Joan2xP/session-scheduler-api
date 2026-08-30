@@ -3,6 +3,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db.models.signals import pre_delete
 from django.dispatch import receiver
+import copy
 
 DEFAULT_SCHEDULER_CONFIG = {
     "constraints": {
@@ -288,7 +289,7 @@ class SessionGroup(models.Model):
 
     def get_scheduler_config(self):
         """Return scheduler config with defaults applied for missing keys."""
-        config = DEFAULT_SCHEDULER_CONFIG.copy()
+        config = copy.deepcopy(DEFAULT_SCHEDULER_CONFIG)
         if self.scheduler_config:
             # Merge constraints
             if "constraints" in self.scheduler_config:
@@ -300,11 +301,15 @@ class SessionGroup(models.Model):
                         config["objectives"][key].update(val)
                     else:
                         config["objectives"][key] = val
-            # Merge group sizes
-            if "weekdayGroupSize" in self.scheduler_config:
-                config["weekdayGroupSize"] = self.scheduler_config["weekdayGroupSize"]
-            if "weekendGroupSize" in self.scheduler_config:
-                config["weekendGroupSize"] = self.scheduler_config["weekendGroupSize"]
+            # Merge group sizes (accept both camelCase and snake_case)
+            for snake, camel in [
+                ("weekday_group_size", "weekdayGroupSize"),
+                ("weekend_group_size", "weekendGroupSize"),
+            ]:
+                if snake in self.scheduler_config:
+                    config[snake] = self.scheduler_config[snake]
+                elif camel in self.scheduler_config:
+                    config[snake] = self.scheduler_config[camel]
         return config
 
     def __str__(self):
