@@ -18,6 +18,7 @@ from .services import (
     SchedulerServiceError,
     SchedulerNotFoundError,
     SchedulerValidationError,
+    SchedulerInfeasible,
     ParticipantService,
     ParticipantServiceError,
     SessionGroupService,
@@ -126,6 +127,11 @@ def generateScheduleData(request):
         return Response({"error": str(e)}, status=status.HTTP_404_NOT_FOUND)
     except SchedulerValidationError as e:
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except SchedulerInfeasible as e:
+        return Response(
+            {"error": str(e), "reasons": e.reasons},
+            status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
     except SchedulerServiceError as e:
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     except Exception as e:

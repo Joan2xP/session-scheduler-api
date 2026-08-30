@@ -1,4 +1,4 @@
-from .scheduler_service import SchedulerService, SchedulerServiceError, SchedulerNotFoundError, SchedulerValidationError
+from .scheduler_service import SchedulerService, SchedulerServiceError, SchedulerNotFoundError, SchedulerValidationError, SchedulerInfeasible
 from .participant_service import ParticipantService, ParticipantServiceError
 from .session_group_service import SessionGroupService, SessionGroupServiceError
 from .exhibitor_service import ExhibitorService, ExhibitorServiceError
@@ -8,6 +8,7 @@ __all__ = [
     "SchedulerServiceError",
     "SchedulerNotFoundError",
     "SchedulerValidationError",
+    "SchedulerInfeasible",
     "ParticipantService",
     "ParticipantServiceError",
     "SessionGroupService",

@@ -1,6 +1,6 @@
 import logging
 from exhibitors.models import Exhibitor, SessionGroup
-from exhibitors.services.SessionScheduler import SessionScheduler
+from exhibitors.services.SessionScheduler import SessionScheduler, SchedulerInfeasibleError
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +15,14 @@ class SchedulerNotFoundError(SchedulerServiceError):
 
 class SchedulerValidationError(SchedulerServiceError):
     pass
+
+
+class SchedulerInfeasible(SchedulerServiceError):
+    """Raised when the schedule is infeasible. Carries human-readable reasons."""
+
+    def __init__(self, message, reasons=None):
+        super().__init__(message)
+        self.reasons = reasons or []
 
 
 class SchedulerService:
@@ -39,7 +47,11 @@ class SchedulerService:
             scheduler_config=scheduler_config,
         )
 
-        result = scheduler.solve_group_scheduling()
+        try:
+            result = scheduler.solve_group_scheduling()
+        except SchedulerInfeasibleError as e:
+            raise SchedulerInfeasible(str(e), reasons=e.reasons)
+
         if not result:
             raise SchedulerServiceError("Could not generate schedule")
 
