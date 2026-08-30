@@ -412,6 +412,65 @@ class SessionScheduler:
                         if (sid, date_str) not in existing_set:
                             existing.append({"sessionId": sid, "date": date_str})
 
+    def validate(self):
+        """Pre-flight checks for common infeasibility causes. Returns list of warnings."""
+        warnings = []
+        availability_enabled = self.scheduler_config["constraints"]["availability"]
+
+        # Check: participants with min_per_month > 0 but no available sessions
+        if availability_enabled:
+            for pid in self.people:
+                avail = self.availability.get(pid, [])
+                min_month = self.min_monthly.get(pid, 0)
+                if min_month > 0 and not avail:
+                    name = self.participant_names.get(pid, str(pid))
+                    warnings.append(
+                        f"Participant '{name}' has min_per_month={min_month} but no available sessions"
+                    )
+
+        # Check: partners with zero overlapping sessions
+        if self.scheduler_config["constraints"]["partner"]:
+            for pid, partner_id in self.partners.items():
+                if partner_id not in self.people:
+                    continue
+                if availability_enabled:
+                    p_sessions = set(self.availability.get(pid, []))
+                    partner_sessions = set(self.availability.get(partner_id, []))
+                    overlap = p_sessions & partner_sessions
+                    if not overlap:
+                        p_name = self.participant_names.get(pid, str(pid))
+                        partner_name = self.participant_names.get(
+                            partner_id, str(partner_id)
+                        )
+                        warnings.append(
+                            f"Partners '{p_name}' and '{partner_name}' have no overlapping sessions — "
+                            f"they can never attend together"
+                        )
+
+        # Check: group size vs available participants per session
+        if self.scheduler_config["constraints"]["group_size"]:
+            for session_id, date in self.available_sessions:
+                date_obj, _, _, weekday, _ = self.date_info[date]
+                required = (
+                    self.weekend_group_size
+                    if weekday >= 5
+                    else self.weekday_group_size
+                )
+                if availability_enabled:
+                    available_count = sum(
+                        1
+                        for pid in self.people
+                        if session_id in self.availability.get(pid, [])
+                    )
+                    if available_count < required:
+                        metadata = self.session_metadata.get(session_id, {})
+                        warnings.append(
+                            f"Session {session_id} on {date} needs {required} participants "
+                            f"but only {available_count} are available"
+                        )
+
+        return warnings
+
     def add_only_session_occurrences_constraints(self):
         """Ensure each participant is only scheduled on their specified session occurrences."""
         all_sessions_set = set(self.all_available_sessions)
@@ -916,7 +975,7 @@ class SessionScheduler:
 
         max_time = solver_config.get(
             "max_time_in_seconds",
-            int(os.environ.get("SCHEDULER_MAX_TIME_SECONDS", "165")),
+            int(os.environ.get("SCHEDULER_MAX_TIME_SECONDS", "30")),
         )
         num_workers = solver_config.get(
             "num_search_workers",
@@ -1146,6 +1205,11 @@ class SessionScheduler:
         enabled = [k for k, v in constraints.items() if v]
         logger.info("applying constraints: %s", ", ".join(enabled))
 
+        # Pre-flight validation
+        warnings = self.validate()
+        for w in warnings:
+            logger.warning("validation: %s", w)
+
         # Add constraints based on config
         if constraints["availability"]:
             self.availability_constraints()
@@ -1172,6 +1236,42 @@ class SessionScheduler:
         if constraints["one_session_per_day"]:
             self.add_one_session_per_day_constraints()
 
+        t_constraints = time.perf_counter()
+        proto = self.model.Proto()
+        logger.info(
+            "constraints built: %d variables, %d constraints (%.1fs)",
+            len(proto.variables),
+            len(proto.constraints),
+            t_constraints - t_total,
+        )
+
+        # Feasibility check: solve constraints only (no objectives) with short timeout
+        feasibility_solver = cp_model.CpSolver()
+        feasibility_solver.parameters.max_time_in_seconds = 5
+        feasibility_solver.parameters.num_search_workers = int(
+            os.environ.get("SCHEDULER_NUM_WORKERS", "2")
+        )
+        logger.info("checking feasibility (5s timeout)...")
+        t_feas = time.perf_counter()
+        feasibility_status = feasibility_solver.Solve(self.model)
+        feas_time = time.perf_counter() - t_feas
+
+        if feasibility_status == cp_model.INFEASIBLE:
+            logger.warning(
+                "problem is INFEASIBLE — constraints conflict (%.1fs)", feas_time
+            )
+            if warnings:
+                logger.warning(
+                    "likely cause: see validation warnings above"
+                )
+            return False
+
+        logger.info(
+            "feasibility confirmed: %s in %.1fs",
+            feasibility_solver.StatusName(feasibility_status),
+            feas_time,
+        )
+
         # Build objective components
         diversity_var = self.add_diversity_objective()
         consecutive_var = self.add_consecutive_days_penalty_objective()
@@ -1189,7 +1289,7 @@ class SessionScheduler:
             t_model - t_total,
         )
 
-        # Solve the model
+        # Solve the model with objectives
         solver = self.initialize_solver()
 
         t_solve = time.perf_counter()
