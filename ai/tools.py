@@ -16,6 +16,22 @@ logger = logging.getLogger(__name__)
 
 SCHEDULE_CACHE_TTL = 3600
 
+DAY_NAMES_ES = [
+    "Lunes",
+    "Martes",
+    "Miércoles",
+    "Jueves",
+    "Viernes",
+    "Sábado",
+    "Domingo",
+]
+
+
+def _day_name(day_of_week):
+    if day_of_week is None:
+        return None
+    return DAY_NAMES_ES[day_of_week]
+
 
 def _schedule_cache_key(user_id, session_group_id, year, month):
     return f"ai:sched:{user_id}:{session_group_id}:{year}:{month}"
@@ -88,6 +104,7 @@ def _serialize_session_group(g, fields=None):
                     "endMinute": s.end_minute,
                     "week": s.week,
                     "dayOfWeek": s.day_of_week,
+                    "dayName": _day_name(s.day_of_week),
                     "month": s.month,
                     "location": s.location,
                 }
@@ -112,6 +129,7 @@ def _serialize_session_group_full(g):
                 "endMinute": s.end_minute,
                 "week": s.week,
                 "dayOfWeek": s.day_of_week,
+                "dayName": _day_name(s.day_of_week),
                 "month": s.month,
                 "location": s.location,
             }

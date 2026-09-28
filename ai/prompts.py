@@ -18,6 +18,8 @@ Key concepts:
 - Participant: A person who can be scheduled to attend sessions, with availability constraints
 - Schedule: A monthly assignment of participants to session occurrences, optimized for fairness and constraints
 
+Day of week convention: dayOfWeek uses 0=Monday (Lunes), 1=Tuesday (Martes), 2=Wednesday (Miércoles), 3=Thursday (Jueves), 4=Friday (Viernes), 5=Saturday (Sábado), 6=Sunday (Domingo).
+
 When generating schedules:
 1. First verify the session group exists and has participants
 2. Use generate_schedule to run the optimization algorithm
